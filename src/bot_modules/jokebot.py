@@ -1,5 +1,6 @@
-# src/bot_modules/joke_generator.py
+# src/bot_modules/jokebot.py
 import asyncio
+import re
 from datetime import datetime
 from typing import Callable, Optional
 
@@ -22,9 +23,16 @@ class JokeGeneratorModule(BotModule):
         global_config,
         logger,
         save_state_callback: Callable[[str, str], None],
+        is_module_enabled_for_chat_callback: Callable[[int], bool],
     ):
         super().__init__(
-            bot, client, module_config, global_config, logger, save_state_callback
+            bot,
+            client,
+            module_config,
+            global_config,
+            logger,
+            save_state_callback,
+            is_module_enabled_for_chat_callback,
         )
         self.logger.info(
             f"JokeGeneratorModule '{self.name}' initialized (scheduled posting disabled)."
@@ -39,6 +47,14 @@ class JokeGeneratorModule(BotModule):
             if user_id not in self.global_config["telegram"]["admin_ids"]:
                 await self.bot.reply_to(
                     message, "Sorry, you are not authorized to request jokes."
+                )
+                return
+
+            # Check if the module is enabled for the chat where the command was issued
+            if not self.is_enabled_for_chat(message.chat.id):
+                await self.bot.reply_to(
+                    message,
+                    f"The '{self.name}' module is disabled for this chat. An admin can enable it in the settings.",
                 )
                 return
 
@@ -71,7 +87,13 @@ class JokeGeneratorModule(BotModule):
             response = await self.client.chat.completions.create(
                 model=model, messages=[{"role": "user", "content": prompt}]
             )
-            return response.choices[0].message.content[:2048]  # TODO: FIX
+            raw_content = response.choices[0].message.content
+
+            pattern = r"<think>.*?</think>"
+            # Replace all occurrences of the pattern with an empty string and trim whitespace.
+            cleaned_content = re.sub(pattern, "", raw_content, flags=re.DOTALL).strip()
+
+            return cleaned_content[:2048]  # TODO: Fix
         except Exception as e:
             self.logger.error(f"Error generating joke ({self.name}): {e}")
             return (
@@ -81,14 +103,18 @@ class JokeGeneratorModule(BotModule):
 
     async def _post_joke(self, joke: str, target_chat_ids: Optional[list[int]] = None):
         """
-        Post a joke to Telegram chats in batches.
-        - Sends messages concurrently within a batch.
-        - Waits between batches to avoid API rate limits.
+        Post a joke to Telegram chats in batches, respecting per-chat settings.
         """
-        chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
-        if not chats:
+        all_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
+
+        # Filter for chats where this module is enabled
+        enabled_chats = [
+            chat_id for chat_id in all_chats if self.is_enabled_for_chat(chat_id)
+        ]
+
+        if not enabled_chats:
             self.logger.warning(
-                f"No chats configured for '{self.name}'. Joke will not be posted."
+                f"No enabled chats found for '{self.name}'. Joke will not be posted."
             )
             return
 
@@ -97,12 +123,11 @@ class JokeGeneratorModule(BotModule):
         batch_delay = telegram_cfg.get("batch_delay_seconds", 2)
 
         self.logger.info(
-            f"Posting joke from '{self.name}' to {len(chats)} chat(s) "
-            f"in batches of {batch_size} with {batch_delay}s delay between batches."
+            f"Posting joke from '{self.name}' to {len(enabled_chats)} enabled chat(s)."
         )
 
-        for batch_start in range(0, len(chats), batch_size):
-            batch = chats[batch_start : batch_start + batch_size]
+        for batch_start in range(0, len(enabled_chats), batch_size):
+            batch = enabled_chats[batch_start : batch_start + batch_size]
             self.logger.debug(f"Sending batch: {batch}")
 
             async def send_to_chat(chat_id: int):
@@ -115,14 +140,17 @@ class JokeGeneratorModule(BotModule):
 
             await asyncio.gather(*(send_to_chat(chat_id) for chat_id in batch))
 
-            if batch_start + batch_size < len(chats):  # Avoid delay after last batch
+            if batch_start + batch_size < len(enabled_chats):
                 await asyncio.sleep(batch_delay)
 
         self.logger.info(f"'{self.name}' joke posting finished.")
 
-    # ----- Unused scheduling API -----
+    # ----- Scheduling API -----
     async def run_scheduled_job(self, target_chat_ids: Optional[list[int]] = None):
-        pass
+        """Manually trigger a joke post."""
+        joke = await self._generate_joke()
+        # The _post_joke function already contains the necessary enablement checks
+        await self._post_joke(joke, target_chat_ids=target_chat_ids)
 
     @property
     def has_pending_posts(self) -> bool:

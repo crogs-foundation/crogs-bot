@@ -17,7 +17,7 @@ STATE_FILE = "holibot_state.json"
 class HoliBotModule(BotModule):
     """
     BotModule responsible for fetching and posting daily holidays.
-    State (including a pre-calculated post schedule) is persisted to disk.
+    State (including a pre-calculated post schedule and posted status) is persisted to disk.
     """
 
     def __init__(
@@ -28,15 +28,24 @@ class HoliBotModule(BotModule):
         global_config,
         logger,
         save_state_callback: Callable[[str, str], None],
+        is_module_enabled_for_chat_callback: Callable[[int], bool],
     ):
         super().__init__(
-            bot, client, module_config, global_config, logger, save_state_callback
+            bot,
+            client,
+            module_config,
+            global_config,
+            logger,
+            save_state_callback,
+            is_module_enabled_for_chat_callback,
         )
         self.logger.info(f"HoliBotModule '{self.name}' initialized.")
 
-        # --- MODIFIED: The queue will now store (name, caption, image_url, post_time) tuples ---
         self._generated_content_queue: asyncio.Queue = asyncio.Queue()
         self._last_generation_date: Optional[datetime.date] = None
+        # --- NEW: In-memory copy of the state for easy updates ---
+        self._todays_posts: List[dict] = []
+
         self._load_state_from_disk()
 
         self.logger.info(
@@ -59,72 +68,75 @@ class HoliBotModule(BotModule):
             self._last_generation_date = datetime.fromisoformat(
                 generation_date_str
             ).date()
-            pending_posts = state.get("pending_posts", [])
             now = datetime.now(timezone.utc)
 
-            # If it's today and there are pending posts, load them for posting.
             if self._last_generation_date == now.date():
-                if pending_posts:
-                    self._clear_queue()
-                    posts_loaded = 0
-                    for item in pending_posts:
+                self._todays_posts = state.get("posts", [])
+                self._clear_queue()
+                posts_loaded = 0
+
+                # --- MODIFIED LOGIC HERE ---
+                # A post is considered "pending" if its status is NOT 'posted' or 'skipped'.
+                # This correctly includes items where the 'status' key is missing.
+                for item in self._todays_posts:
+                    if item.get("status") not in ["posted", "skipped"]:
                         post_time = datetime.fromisoformat(item["post_time"])
-                        # --- NEW: Only load posts that are scheduled for the future ---
-                        if post_time > now:
-                            post_tuple = (
-                                item["holiday_name"],
-                                item["caption"],
-                                item["image_url"],
-                                post_time,
+
+                        # --- NEW: Manually triggered posts might be in the past ---
+                        # If a manually re-queued post's time is in the past,
+                        # schedule it to post in a few seconds from now to avoid skipping it.
+                        if post_time <= now:
+                            self.logger.info(
+                                f"Found a manually re-queued post '{item['holiday_name']}' with a past schedule. "
+                                "Rescheduling for immediate posting."
                             )
-                            self._generated_content_queue.put_nowait(post_tuple)
-                            posts_loaded += 1
-                        else:
-                            self.logger.warning(
-                                f"Skipping post '{item['holiday_name']}' scheduled for {post_time.isoformat()} as it's in the past."
-                            )
-                    self.logger.info(
-                        f"Found {len(pending_posts)} pending posts from today. "
-                        f"Loaded {posts_loaded} future posts into queue."
-                    )
-            else:
-                self.logger.debug(
-                    f"State file from a previous day ({self._last_generation_date}) found. Ignoring."
+                            post_time = now + timedelta(seconds=5)
+                            # Update the record so it's saved correctly
+                            item["post_time"] = post_time.isoformat()
+
+                        post_tuple = (
+                            item["holiday_name"],
+                            item["caption"],
+                            item["image_url"],
+                            post_time,
+                        )
+                        self._generated_content_queue.put_nowait(post_tuple)
+                        posts_loaded += 1
+
+                self.logger.info(
+                    f"Found {len(self._todays_posts)} total posts for today. "
+                    f"Loaded {posts_loaded} pending/re-queued posts into queue."
                 )
+                if posts_loaded > 0:
+                    # If we re-queued anything, save the state with the updated post times.
+                    asyncio.create_task(self._save_state_to_disk())
+
         except FileNotFoundError:
             self.logger.info(f"{STATE_FILE} not found. Will be created on generation.")
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             self.logger.error(f"Error loading state from {STATE_FILE}: {e}. Ignoring.")
 
     async def _save_state_to_disk(self):
-        pending_posts = list(self._generated_content_queue._queue)
-        posts_to_save = [
-            {
-                "holiday_name": item[0],
-                "caption": item[1],
-                "image_url": item[2],
-                # --- MODIFIED: Save the datetime object as an ISO string ---
-                "post_time": item[3].isoformat(),
-            }
-            for item in pending_posts
-        ]
+        """Saves the current state (including all posts and their statuses) to the state file."""
         state = {
             "generation_date": self._last_generation_date.isoformat()
             if self._last_generation_date
             else None,
-            "pending_posts": posts_to_save,
+            "posts": self._todays_posts,
         }
         try:
             with open(STATE_FILE, "w") as f:
                 json.dump(state, f, indent=2)
             self.logger.debug(
-                f"State saved to {STATE_FILE} with {len(posts_to_save)} pending posts."
+                f"State saved to {STATE_FILE} with {len(self._todays_posts)} total posts."
             )
         except Exception as e:
             self.logger.error(f"Failed to save state to {STATE_FILE}: {e}")
 
-    # ----- Required API (MODIFIED logic) -----
+    # ----- Required API (Largely unchanged, logic is now in helpers) -----
 
+    # ... (register_handlers, has_pending_posts, next_scheduled_event_time, process_due_event, run_scheduled_job) ...
+    # These methods are identical to the previous 'final' version.
     def register_handlers(self):
         pass
 
@@ -133,14 +145,13 @@ class HoliBotModule(BotModule):
         return not self._generated_content_queue.empty()
 
     @property
-    def next_scheduled_event_time(self) -> datetime | None:
+    def next_scheduled_event_time(self) -> Optional[datetime]:
         now = datetime.now(timezone.utc)
         scheduler_cfg = self.module_config.get("scheduler", {})
         generation_time_str = scheduler_cfg.get("post_time_utc")
-        next_gen_event: datetime | None = None
-        next_post_event: datetime | None = None
+        next_gen_event: Optional[datetime] = None
+        next_post_event: Optional[datetime] = None
 
-        # 1) Next generation time
         if generation_time_str:
             try:
                 gen_hour, gen_minute = self._parse_hhmm(generation_time_str)
@@ -154,13 +165,9 @@ class HoliBotModule(BotModule):
             except (ValueError, KeyError) as e:
                 self.logger.error(f"Invalid 'post_time_utc' for generation: {e}")
 
-        # 2) Next post time
-        # --- MODIFIED: Simply peek at the first item in the queue ---
         if self.has_pending_posts:
-            # _queue[0] is a non-blocking peek at the next item
             next_post_event = self._generated_content_queue._queue[0][3]
 
-        # Return the soonest event
         if next_gen_event and next_post_event:
             return min(next_gen_event, next_post_event)
         return next_gen_event or next_post_event
@@ -182,7 +189,7 @@ class HoliBotModule(BotModule):
                 ):
                     is_generation_due = True
             except (ValueError, KeyError):
-                pass  # Error already logged by next_scheduled_event_time
+                pass
 
         is_post_due = False
         if self.has_pending_posts:
@@ -204,7 +211,6 @@ class HoliBotModule(BotModule):
         await self._do_generate_and_queue_content()
         posts_made = 0
         while self.has_pending_posts:
-            # --- MODIFIED: For manual posts, we ignore the schedule and post now ---
             posted = await self._do_post_next_item(
                 target_chat_ids=target_chat_ids, force_post_now=True
             )
@@ -218,6 +224,8 @@ class HoliBotModule(BotModule):
         )
 
     # ----- Internal helpers -----
+    # ... (_parse_hhmm, _within_same_or_next_day_window, _clear_queue) ...
+    # These methods are identical to the previous 'final' version.
     @staticmethod
     def _parse_hhmm(value: str) -> tuple[int, int]:
         hour, minute = map(int, value.split(":"))
@@ -238,7 +246,9 @@ class HoliBotModule(BotModule):
         except QueueEmpty:
             pass
 
-    # ----- Scraping & generation (largely unchanged) -----
+    # ----- Scraping & generation (Unchanged) -----
+    # ... (_get_todays_holidays, _generate_caption, _generate_image, _generate_holiday_content) ...
+    # These methods are identical to the previous 'final' version.
     def _get_todays_holidays(self) -> list[str]:
         try:
             cfg = self.module_config.get("scraper", {})
@@ -303,7 +313,6 @@ class HoliBotModule(BotModule):
             return holiday_name, caption, image_url
 
     def _calculate_post_schedule(self, num_posts: int) -> List[datetime]:
-        """--- MODIFIED: Now returns a list of datetimes ---"""
         now = datetime.now(timezone.utc)
         scheduler_cfg = self.module_config.get("scheduler", {})
         start_str = scheduler_cfg.get("post_start_time_utc")
@@ -322,7 +331,6 @@ class HoliBotModule(BotModule):
                 start_time, end_time
             )
 
-            # Ensure first post is not in the past, unless the entire window is.
             effective_start_time = max(now, start_time)
             if effective_start_time > end_time:
                 self.logger.warning(
@@ -351,6 +359,7 @@ class HoliBotModule(BotModule):
         today = datetime.now(timezone.utc).date()
         self.logger.info(f"Starting content generation for {today}.")
         self._last_generation_date = today
+        self._todays_posts = []  # Reset the in-memory log
 
         holidays = await asyncio.to_thread(self._get_todays_holidays)
         if not holidays:
@@ -359,7 +368,6 @@ class HoliBotModule(BotModule):
             return False
 
         self._clear_queue()
-        # --- MODIFIED: Calculate schedule first ---
         schedule = self._calculate_post_schedule(len(holidays))
 
         concurrency = self.module_config.get("llm", {}).get("concurrency_limit", 4)
@@ -370,6 +378,15 @@ class HoliBotModule(BotModule):
         for i, content in enumerate(generated_content):
             holiday_name, caption, image_url = content
             post_time = schedule[i]
+            # --- MODIFIED: Populate both the in-memory list and the queue ---
+            post_record = {
+                "holiday_name": holiday_name,
+                "caption": caption,
+                "image_url": image_url,
+                "post_time": post_time.isoformat(),
+                "status": "pending",
+            }
+            self._todays_posts.append(post_record)
             await self._generated_content_queue.put(
                 (holiday_name, caption, image_url, post_time)
             )
@@ -382,25 +399,39 @@ class HoliBotModule(BotModule):
         self, target_chat_ids: Optional[list[int]] = None, force_post_now=False
     ) -> bool:
         if self.has_pending_posts:
-            # For manual trigger, we still want to remove from queue and save state
+            # Get the item from the in-memory queue
             if force_post_now:
                 holiday, caption, image_url, _ = await self._generated_content_queue.get()
             else:
                 holiday, caption, image_url, post_time = (
                     self._generated_content_queue.get_nowait()
                 )
-
-            await (
-                self._save_state_to_disk()
-            )  # Update state immediately after getting item
         else:
             self.logger.debug("Post queue is empty. No items to post.")
             return False
 
-        post_to_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
+        all_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
+        post_to_chats = [
+            chat_id for chat_id in all_chats if self.is_enabled_for_chat(chat_id)
+        ]
+
+        # --- MODIFIED: Mark as posted/skipped even if no chats are enabled ---
+        post_status = "posted" if post_to_chats else "skipped"
+
+        # Find the corresponding record in our in-memory list and update its status
+        for post_record in self._todays_posts:
+            if post_record["holiday_name"] == holiday:
+                post_record["status"] = post_status
+                break
+
+        # Save the updated state to disk immediately
+        await self._save_state_to_disk()
+
         if not post_to_chats:
-            self.logger.warning("No target chats to post to. Dropping queued item.")
-            return False
+            self.logger.warning(
+                f"No enabled chats found to post '{holiday}'. Marked as '{post_status}'."
+            )
+            return True  # Successfully processed by skipping
 
         try:
             telegram_cfg = self.module_config.get("telegram_settings", {})
@@ -408,7 +439,9 @@ class HoliBotModule(BotModule):
             if len(caption) > caption_limit:
                 caption = caption[: caption_limit - 3] + "..."
 
-            self.logger.info(f"Posting '{holiday}' to {len(post_to_chats)} chat(s).")
+            self.logger.info(
+                f"Posting '{holiday}' to {len(post_to_chats)} enabled chat(s)."
+            )
             for chat_id in post_to_chats:
                 try:
                     if image_url:
@@ -416,11 +449,15 @@ class HoliBotModule(BotModule):
                     else:
                         await self.bot.send_message(chat_id, caption)
                 except ApiTelegramException as e:
-                    self.logger.error(f"Telegram API Error sending to {chat_id}: {e}")
+                    self.logger.error(
+                        f"Telegram API Error sending to {chat_id} for {holiday}: {e}"
+                    )
+                    # If sending fails, we don't change the status back, it remains 'posted'
+                    # to prevent retries. This could be changed if retries are desired.
 
             if not self.has_pending_posts:
                 self.logger.info("Last item posted for today. Queue is now empty.")
             return True
         except Exception as e:
-            self.logger.error(f"Error while processing next post: {e}")
+            self.logger.error(f"Error while processing next post for '{holiday}': {e}")
             return False

@@ -3,6 +3,7 @@ import asyncio
 import os
 import signal
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import uvicorn
 import yaml
@@ -45,7 +46,7 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not found in .env file!")
 
 bot = AsyncTeleBot(TELEGRAM_BOT_TOKEN)
-client = AsyncClient()  # g4f client for modules
+client = AsyncClient()
 CONFIG_FILE = "config.yaml"
 config: dict = {}
 active_bot_modules: list[BotModule] = []
@@ -56,7 +57,11 @@ active_bot_modules: list[BotModule] = []
 def load_config() -> dict:
     try:
         with open(CONFIG_FILE, "r") as f:
-            return yaml.safe_load(f)
+            loaded_config = yaml.safe_load(f)
+            # Ensure the new settings key exists to prevent KeyErrors
+            if "chat_module_settings" not in loaded_config:
+                loaded_config["chat_module_settings"] = {}
+            return loaded_config
     except FileNotFoundError:
         logger.warning(f"{CONFIG_FILE} not found. Please create it with defaults.")
         raise
@@ -94,16 +99,15 @@ def instantiate_bot_modules():
         getattr(module, "close", lambda: None)()
     active_bot_modules.clear()
 
-    module_classes = {"HoliBot": HoliBotModule, "JokeGenerator": JokeGeneratorModule}
+    module_classes = {"holibot": HoliBotModule, "jokebot": JokeGeneratorModule}
 
     for name, part_cfg in config.get("parts", {}).items():
         if not part_cfg.get("enabled"):
-            logger.info(f"Module '{name}' disabled. Skipping.")
+            logger.info(f"Module '{name}' disabled globally. Skipping.")
             continue
-        module_type = part_cfg.get("type")
-        module_cls = module_classes.get(module_type)
+        module_cls = module_classes.get(name)
         if not module_cls:
-            logger.warning(f"Unknown module type '{module_type}' for '{name}'. Skipping.")
+            logger.warning(f"Unknown module name '{name}'. Skipping.")
             continue
         try:
             instance = module_cls(
@@ -112,15 +116,18 @@ def instantiate_bot_modules():
                 module_config=part_cfg,
                 global_config=config,
                 logger=logger,
+                is_module_enabled_for_chat_callback=partial(
+                    is_module_enabled_for_chat, module_name=name
+                ),
                 save_state_callback=lambda k, v, part_name=name: save_module_state(
                     part_name, k, v
                 ),
             )
             instance.register_handlers()
             active_bot_modules.append(instance)
-            logger.info(f"Module '{name}' ({module_type}) loaded.")
+            logger.info(f"Module '{name}'  loaded.")
         except Exception as e:
-            logger.error(f"Failed to load module '{name}' ({module_type}): {e}")
+            logger.error(f"Failed to load module '{name}': {e}")
 
 
 # --- Helpers ---
@@ -128,6 +135,27 @@ def instantiate_bot_modules():
 
 def is_admin(user_id: int) -> bool:
     return user_id in config.get("telegram", {}).get("admin_ids", [])
+
+
+def is_module_enabled_for_chat(
+    chat_id: int,
+    module_name: str,
+) -> bool:
+    """Checks if a module is enabled for a specific chat, respecting global and local settings."""
+    # 1. Check global setting first. If globally disabled, it's always false.
+    module_global_config = config.get("parts", {}).get(module_name, {})
+    if not module_global_config.get("enabled", False):
+        return False
+
+    # 2. Check for a specific override for this chat.
+    # The chat_id must be converted to a string to be used as a YAML/JSON key.
+    chat_settings = config.get("chat_module_settings", {}).get(str(chat_id), {})
+    if module_name in chat_settings:
+        return chat_settings[module_name]
+
+    # 3. If no specific override, the module is enabled for this chat because
+    #    we already confirmed it's globally enabled in step 1.
+    return True
 
 
 async def trigger_modules(target_chat_ids=None):
@@ -209,7 +237,10 @@ async def handle_chat_update(message: ChatMemberUpdated):
     elif message.new_chat_member.status == "kicked" and chat_id in chat_ids:
         chat_ids.remove(chat_id)
         save_chat_ids(chat_ids)
-        logger.info(f"Bot removed from group: {chat_id}")
+        # Clean up per-chat settings when the bot is removed.
+        config.get("chat_module_settings", {}).pop(str(chat_id), None)
+        save_config(config)
+        logger.info(f"Bot removed from group: {chat_id}. Cleared its specific settings.")
 
 
 # --- Background tasks ---
@@ -230,16 +261,9 @@ async def background_scheduler():
         for module in active_bot_modules:
             next_event_time = module.next_scheduled_event_time
             if not next_event_time:
-                module.logger.debug(
-                    f"Scheduler: '{module.name}' has no future scheduled events."
-                )
                 continue
 
             if now >= next_event_time - timedelta(seconds=2):
-                logger.info(
-                    f"Scheduler: '{module.name}' event is DUE NOW "
-                    f"(scheduled for {next_event_time.strftime('%H:%M:%S UTC')})."
-                )
                 tasks_to_run.append(module.process_due_event())
             else:
                 sleep_for_module = (next_event_time - now).total_seconds()
@@ -251,16 +275,12 @@ async def background_scheduler():
         if tasks_to_run:
             logger.info(f"Scheduler: Executing {len(tasks_to_run)} due tasks.")
             await asyncio.gather(*tasks_to_run, return_exceptions=True)
-            logger.debug(
-                "Scheduler: Tasks executed. Re-evaluating next sleep duration immediately."
-            )
             await asyncio.sleep(1)
             continue
 
         next_sleep_duration_seconds = max(next_sleep_duration_seconds, 5)
         logger.info(
-            f"Scheduler: Next global check in {next_sleep_duration_seconds:.2f} seconds "
-            f"({next_sleep_duration_seconds / 3600:.2f} hours)."
+            f"Scheduler: Next global check in {next_sleep_duration_seconds:.2f} seconds."
         )
 
         try:
@@ -269,7 +289,7 @@ async def background_scheduler():
             logger.info("Scheduler task cancelled.")
             break
         except Exception as e:
-            logger.error(f"An unexpected error occurred in background_scheduler: {e}")
+            logger.error(f"An unexpected error in background_scheduler: {e}")
             await asyncio.sleep(5)
 
     logger.info("Scheduler task has finished.")

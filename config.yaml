@@ -3,17 +3,24 @@ telegram:
     - 424826379
   chat_ids:
     - "@dsomni_test_channel"
-    - -4883974576
+    - "-4883974576"
+
+chat_module_settings: # By default all are enabled (if possible)
+  "@dsomni_test_channel":
+    jokebot: false
+  "-4883974576":
+    holibot: false
+
 webapp:
   url: https://f6e2268f5aa0.ngrok-free.app/
 parts:
   holibot:
     enabled: true
-    type: HoliBot
+    type: "HoliBot"
     scheduler:
-      post_time_utc: "22:52"
-      post_start_time_utc: "22:53"
-      post_end_time_utc: "22:54"
+      post_time_utc: "23:23"
+      post_start_time_utc: "23:26"
+      post_end_time_utc: "23:27"
     scraper:
       holiday_url: https://www.checkiday.com/
       holiday_limit: 2
@@ -30,11 +37,11 @@ parts:
       post_delay_seconds: 1
   jokebot:
     enabled: true
-    type: JokeGenerator
+    type: "JokeGenerator"
     llm:
       text_model: qwen-3-30b
-      joke_prompt: Tell me a short hilarious joke
-      joke_prompt_with_topic: Tell me a short, funny joke about {topic}.
+      joke_prompt: "Tell me a hilarious joke up to 2000 symbols"
+      joke_prompt_with_topic: "Tell me a joke about {topic} up to 2000 symbols length."
     telegram_settings:
       post_delay_seconds: 1
       batch_size: 5

@@ -23,6 +23,7 @@ class BotModule(ABC):
         global_config: dict,
         logger: Logger,
         save_state_callback: Callable[[str, str], None],
+        is_module_enabled_for_chat_callback: Callable[[int], bool],
     ):
         """
         Args:
@@ -31,7 +32,8 @@ class BotModule(ABC):
             module_config: Configuration specific to this module.
             global_config: The entire loaded application configuration.
             logger: Application logger instance.
-            save_state_callback: Callback to persist module-specific state (key, value) to config.
+            save_state_callback: Callback to persist module-specific state.
+            is_module_enabled_for_chat_callback: Callback to check if the module is enabled for a given chat.
         """
         self.bot = bot
         self.client = client
@@ -40,6 +42,7 @@ class BotModule(ABC):
         self.name = module_config.get("name", self.__class__.__name__)
         self.logger = logger.get_child(self.name)
         self._save_state_callback = save_state_callback
+        self.is_enabled_for_chat = is_module_enabled_for_chat_callback
 
     # ----- Abstract API -----
     @abstractmethod
