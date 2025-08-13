@@ -9,7 +9,7 @@ scheduler:
   post_time_utc: 08:00
 scraper:
   holiday_url: https://www.checkiday.com/
-  holiday_limit: 1
+  holiday_limit: 2
 llm:
   concurrency_limit: 5
   text_model: qwen-3-32b

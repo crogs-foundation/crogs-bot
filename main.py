@@ -15,7 +15,7 @@ from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
 
 from src.logger import Logger
-from src.web_api import app
+from src.web_api import app, main_app_instance  # Import main_app_instance here
 
 # --- Load Environment Variables FIRST ---
 load_dotenv()
@@ -63,10 +63,7 @@ def load_and_merge_config():
             "text_prompt": "Generate a short, funny caption for '{holiday_name}'.",
             "image_prompt": "A humorous image for '{holiday_name}'.",
         },
-        # Add the new webapp section to defaults
-        "webapp": {
-            "url": "https://127.0.0.1:8000"  # A default for local testing
-        },
+        "webapp": {"url": "https://127.0.0.1:8000"},
     }
     try:
         with open(CONFIG_FILE, "r") as f:
@@ -80,13 +77,11 @@ def load_and_merge_config():
     merged_config = deepcopy(DEFAULTS)
     for key, value in user_config.items():
         if isinstance(value, dict):
-            # Use deepcopy for nested dictionaries
             merged_config[key] = deepcopy(merged_config.get(key, {}))
             merged_config[key].update(value)
         else:
             merged_config[key] = value
 
-    # Save the potentially updated config (with new default sections)
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(merged_config, f, sort_keys=False, indent=2)
 
@@ -211,7 +206,6 @@ async def settings_handler(message):
         await bot.reply_to(message, "Sorry, you are not authorized.")
         return
 
-    # Load URL from the global config object
     try:
         webapp_url = config["webapp"]["url"]
         if not webapp_url.startswith("https"):
@@ -309,24 +303,42 @@ async def polling_loop(shutdown_event: asyncio.Event):
 
     while True:
         try:
-            # The asyncio.shield() call is not strictly necessary with the right shutdown logic,
-            # but it makes our intent clear: the get_updates call should not be cancelled directly.
-            # Instead, the outer task is cancelled, which this loop will catch.
             updates = await bot.get_updates(offset=offset, timeout=timeout)
             if updates:
                 offset = updates[-1].update_id + 1
                 await bot.process_new_updates(updates)
 
         except asyncio.CancelledError:
-            # This is the signal for a graceful shutdown.
             logger.info("Polling loop received cancel signal. Exiting.")
             break
         except Exception as e:
             logger.error(f"An error occurred in the polling loop: {e}")
-            # Avoid spamming logs on persistent errors.
             await asyncio.sleep(5)
 
     logger.info("Polling loop has finished.")
+
+
+# --- NEW: Config Reloader Task ---
+async def config_reloader_task(interval_seconds=5):
+    """
+    Periodically checks if the config needs to be reloaded from disk.
+    """
+    global config  # Declare intent to modify global config
+    logger.info("Starting config reloader task.")
+    while True:
+        try:
+            if main_app_instance.reload_config_signal:
+                logger.info("Reload signal received. Reloading config from file.")
+                config = load_and_merge_config()
+                main_app_instance.reload_config_signal = False
+                logger.info("Config reloaded successfully.")
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Config reloader task cancelled.")
+            break
+        except Exception as e:
+            logger.error(f"Error in config reloader task: {e}")
+            await asyncio.sleep(interval_seconds)
 
 
 async def main():
@@ -336,10 +348,9 @@ async def main():
 
     shutdown_event = asyncio.Event()
 
-    # --- THIS IS THE KEY CHANGE: Get the running event loop ---
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -348,15 +359,10 @@ async def main():
     )
     server = uvicorn.Server(uvicorn_config)
 
-    # This is the function that will be called by the signal.
-    # It needs to be a regular function, not an async one.
     def initiate_shutdown(sig):
         logger.info(f"Signal {sig.name} received. Initiating graceful shutdown...")
-        # Setting the event is a thread-safe way to signal the main task.
         shutdown_event.set()
 
-    # --- Register the handler with the asyncio event loop ---
-    # This is the correct way to handle signals in an asyncio application.
     loop.add_signal_handler(signal.SIGINT, initiate_shutdown, signal.SIGINT)
     loop.add_signal_handler(signal.SIGTERM, initiate_shutdown, signal.SIGTERM)
 
@@ -364,16 +370,15 @@ async def main():
 
     scheduler_task = asyncio.create_task(background_scheduler())
     polling_task = asyncio.create_task(polling_loop(shutdown_event))
+    config_reloader = asyncio.create_task(config_reloader_task())  # Launch the new task
 
     async def run_server():
         await server.serve()
 
     web_server_task = asyncio.create_task(run_server())
 
-    # The application now waits here until initiate_shutdown() sets the event.
     await shutdown_event.wait()
 
-    # The rest of your proven cleanup logic from before.
     logger.info("Shutdown event received. Cleaning up all tasks...")
 
     logger.info("Closing Telegram bot session to unblock network calls...")
@@ -382,9 +387,14 @@ async def main():
     server.should_exit = True
     scheduler_task.cancel()
     polling_task.cancel()
+    config_reloader.cancel()  # Cancel the new task
 
     await asyncio.gather(
-        scheduler_task, polling_task, web_server_task, return_exceptions=True
+        scheduler_task,
+        polling_task,
+        config_reloader,
+        web_server_task,
+        return_exceptions=True,
     )
 
     logger.info("Application has shut down gracefully.")

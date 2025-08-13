@@ -1,4 +1,4 @@
-# Holy-Byte
+# Crogs Telegram Bot
 
 ![Python](https://img.shields.io/badge/python-3.13-blue.svg)
 ![Ruff](https://img.shields.io/badge/style-ruff-%23cc66cc.svg?logo=ruff&logoColor=white)
