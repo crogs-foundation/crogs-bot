@@ -42,7 +42,9 @@ uv run pre-commit run --all-files
 
 ## Quick Start
 
-TDW
+```bash
+ngrok http 8000
+```
 
 ## Repository Structure
 

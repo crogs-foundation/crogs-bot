@@ -1,33 +1,20 @@
 telegram:
-  # User IDs of admins who can use /postnow and /posttome
   admin_ids:
-    - 424826379
-  # List of channel/group IDs to post to. Groups are auto-added.
+  - 424826379
   chat_ids:
-    - "@dsomni_test_channel"
-  # Telegram's caption limit for photos is 1024 characters
+  - '@dsomni_test_channel'
   caption_character_limit: 1024
-  # Delay between sending messages to avoid rate-limiting
   post_delay_seconds: 1
-
 scheduler:
-  # Time to post the daily holidays, in "HH:MM" 24-hour UTC format
-  post_time_utc: "08:00"
-
+  post_time_utc: 08:00
 scraper:
-  # URL to scrape for holidays
-  holiday_url: "https://www.checkiday.com/"
-  # Max number of holidays to post. Use 0 for unlimited.
+  holiday_url: https://www.checkiday.com/
   holiday_limit: 1
-
 llm:
-  # Number of parallel requests to the LLM provider
   concurrency_limit: 5
-  # Model to use for generating text captions
-  text_model: "qwen-3-32b"
-  # Model to use for generating images
-  image_model: "flux"
-  # Prompt template for generating text captions. {holiday_name} is the placeholder.
-  text_prompt: "Generate a short, funny, and engaging caption for the holiday: '{holiday_name}'."
-  # Prompt template for generating images. {holiday_name} is the placeholder.
-  image_prompt: "A humorous, creative image for the holiday: '{holiday_name}'."
+  text_model: qwen-3-32b
+  image_model: flux
+  text_prompt: 'Generate a short, funny, and engaging caption for the holiday: ''{holiday_name}''.'
+  image_prompt: 'A humorous, creative image for the holiday: ''{holiday_name}''.'
+webapp:
+  url: https://f6e2268f5aa0.ngrok-free.app/
