@@ -45,7 +45,7 @@ class Logger:
             raise RuntimeError("Level should be specified")
 
         self.name = name
-        self.level = level
+        self.level: Level = level
         self.verbose = level == "INFO"
         self.msg_format = msg_format
         self.datefmt = datefmt

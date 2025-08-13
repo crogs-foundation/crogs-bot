@@ -1,37 +1,42 @@
 telegram:
   admin_ids:
-    - 424826379 # Replace with your actual Telegram User ID
+  - 424826379
   chat_ids:
-    - "@dsomni_test_channel"
+  - '@dsomni_test_channel'
+  - -4883974576
 webapp:
   url: https://f6e2268f5aa0.ngrok-free.app/
 parts:
   holibot:
     enabled: true
-    type: "HoliBot"
+    type: HoliBot
     scheduler:
-      post_time_utc: "08:00"
+      post_time_utc: '21:19'
+      post_start_time_utc: '21:20'
+      post_end_time_utc: '21:21'
     scraper:
-      holiday_url: "https://www.checkiday.com/"
+      holiday_url: https://www.checkiday.com/
       holiday_limit: 1
     llm:
       concurrency_limit: 5
-      text_model: "qwen-3-32b"
-      image_model: "flux"
-      text_prompt: "Generate a short, funny, and engaging caption for the holiday: '{holiday_name}'."
-      image_prompt: "A humorous, creative image for the holiday: '{holiday_name}'."
+      text_model: qwen-3-32b
+      image_model: flux
+      text_prompt: 'Generate a short, funny, and engaging caption for the holiday:
+        ''{holiday_name}''.'
+      image_prompt: 'A humorous, creative image for the holiday: ''{holiday_name}''.'
     telegram_settings:
       caption_character_limit: 1024
       post_delay_seconds: 1
-
+    _last_generation_date: '2025-08-13'
   jokebot:
     enabled: true
-    type: "JokeGenerator"
+    type: JokeGenerator
     scheduler:
-      post_time_utc: "12:00"
+      post_time_utc: '12:00'
     llm:
-      text_model: "evil"
-      joke_prompt: "Tell me a short hilarious joke"
-      joke_prompt_with_topic: "Tell me a short, funny joke about {topic}."
+      text_model: evil
+      joke_prompt: Tell me a short hilarious joke
+      joke_prompt_with_topic: Tell me a short, funny joke about {topic}.
     telegram_settings:
       post_delay_seconds: 1
+    _last_scheduled_joke_date: '2025-08-13'

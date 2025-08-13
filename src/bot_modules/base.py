@@ -1,8 +1,9 @@
 # src/bot_modules/base.py
-from abc import ABC, abstractmethod
-from typing import Optional
+from abc import ABC, abstractmethod, abstractproperty
+from datetime import datetime
+from typing import Callable  # Import Callable for type hinting
 
-from g4f.client import AsyncClient  # Assuming g4f client is shared across modules
+from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
 
 from src.logger import Logger
@@ -21,6 +22,7 @@ class BotModule(ABC):
         module_config: dict,
         global_config: dict,
         logger: Logger,
+        save_state_callback: Callable[[str, str], None],
     ):
         """
         Initializes a BotModule.
@@ -31,27 +33,34 @@ class BotModule(ABC):
             module_config (dict): Configuration specific to this module.
             global_config (dict): The entire loaded application configuration.
             logger (Logger): The application logger instance.
+            save_state_callback (Callable[[str, str], None]): A callback function
+                                  to persist module-specific state (key, value) to config.
         """
         self.bot = bot
         self.client = client
         self.module_config = module_config
         self.global_config = global_config
+        self.name = module_config.get("name", self.__class__.__name__)
+        # self.logger = logger.getChild(self.name)
         self.logger = logger
-        self.name = module_config.get(
-            "name", self.__class__.__name__
-        )  # Use name from config or class name
+        self._save_state_callback = save_state_callback  # Store the callback
 
     @abstractmethod
-    async def run_scheduled_job(self, target_chat_ids: Optional[list[int]] = None):
-        """
-        Abstract method for the main job this module performs (e.g., daily post, news fetch).
-        This method will be called by the scheduler or manual commands.
-        target_chat_ids allows overriding global chat_ids for specific posts (e.g., /posttome).
-        """
+    async def run_scheduled_job(self, target_chat_ids: list[int] = None):
+        pass
 
     @abstractmethod
     def register_handlers(self):
-        """
-        Abstract method to register all Telegram message handlers specific to this module.
-        Implementations should use self.bot.message_handler(...) decorators internally.
-        """
+        pass
+
+    @abstractproperty
+    def has_pending_posts(self) -> bool:
+        pass
+
+    @abstractproperty
+    def next_scheduled_event_time(self) -> datetime | None:
+        pass
+
+    @abstractmethod
+    async def process_due_event(self):
+        pass

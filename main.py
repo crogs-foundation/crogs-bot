@@ -65,10 +65,33 @@ def load_and_merge_config():
 
 def save_config_chats(chat_ids):
     """Saves the updated list of chat IDs to the config file."""
-    current_config = load_and_merge_config()  # Reload to get the latest base config
+    # This function is specifically for global chat_ids, which is fine
+    current_config = load_and_merge_config()
     current_config["telegram"]["chat_ids"] = chat_ids
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(current_config, f, sort_keys=False, indent=2)
+
+
+def save_module_state(module_name: str, key: str, value: str):
+    """
+    Saves a specific state key for a module to the config.yaml file.
+    This is used to persist things like '_last_generation_date'.
+    """
+    global config  # Ensure we're working with the global in-memory config
+    try:
+        current_config_on_disk = load_and_merge_config()  # Load freshest state from disk
+
+        # Update both the in-memory global config AND the disk version
+        if module_name in config["parts"]:
+            config["parts"][module_name][key] = value
+        if module_name in current_config_on_disk["parts"]:
+            current_config_on_disk["parts"][module_name][key] = value
+
+        with open(CONFIG_FILE, "w") as f:
+            yaml.dump(current_config_on_disk, f, sort_keys=False, indent=2)
+        logger.debug(f"Saved state for module '{module_name}': {key} = {value}")
+    except Exception as e:
+        logger.error(f"Failed to save state for module '{module_name}': {e}")
 
 
 def instantiate_bot_modules():
@@ -77,15 +100,14 @@ def instantiate_bot_modules():
     Clears existing module instances and registers their handlers.
     """
     global active_bot_modules
-    active_bot_modules.clear()  # Remove old instances (important for config reloads)
+    for module in active_bot_modules:
+        if hasattr(module, "close"):
+            module.close()
+    active_bot_modules.clear()
 
-    # Map 'type' strings from config to actual BotModule classes
     module_classes = {
         "HoliBot": HoliBotModule,
-        "JokeGenerator": JokeGeneratorModule,  # <--- Add this line
-        # Add other module types here as they are developed:
-        # "JokeGenerator": JokeGeneratorModule,
-        # "NewsScraper": NewsScraperModule,
+        "JokeGenerator": JokeGeneratorModule,
     }
 
     if "parts" in config and isinstance(config["parts"], dict):
@@ -95,15 +117,19 @@ def instantiate_bot_modules():
                 if module_type in module_classes:
                     module_class = module_classes[module_type]
                     try:
+                        # Pass save_module_state function to module for state persistence
                         module_instance = module_class(
                             bot=bot,
                             client=client,
                             module_config=part_cfg,
-                            global_config=config,  # Pass global config for shared data like chat_ids
+                            global_config=config,
                             logger=logger,
+                            save_state_callback=lambda key,
+                            value,
+                            part_name=part_name: save_module_state(part_name, key, value),
                         )
                         active_bot_modules.append(module_instance)
-                        module_instance.register_handlers()  # Call module to register its specific handlers
+                        module_instance.register_handlers()
                         logger.info(
                             f"Module '{part_name}' ({module_type}) loaded and handlers registered."
                         )
@@ -121,7 +147,7 @@ def instantiate_bot_modules():
         logger.warning("No 'parts' section found or it's invalid in config.yaml.")
 
 
-# --- Command Handlers (Global - affecting all enabled modules) ---
+# --- Command Handlers (Global) ---
 @bot.message_handler(commands=["start", "help"])
 async def send_welcome(message):
     await bot.reply_to(
@@ -167,7 +193,6 @@ async def settings_handler(message):
 
 @bot.message_handler(commands=["postnow"])
 async def post_now_handler(message):
-    """Triggers run_scheduled_job for all active modules to all configured chats."""
     if message.from_user.id not in config["telegram"]["admin_ids"]:
         await bot.reply_to(message, "Sorry, you are not authorized to use this command.")
         return
@@ -182,12 +207,11 @@ async def post_now_handler(message):
     )
     for module in active_bot_modules:
         asyncio.create_task(module.run_scheduled_job())
-        await asyncio.sleep(0.1)  # Small delay to avoid overwhelming the event loop
+        await asyncio.sleep(0.1)
 
 
 @bot.message_handler(commands=["posttome"])
 async def post_to_me_handler(message):
-    """Triggers run_scheduled_job for all active modules, but only to the sender's chat."""
     if message.from_user.id not in config["telegram"]["admin_ids"]:
         await bot.reply_to(message, "Sorry, you are not authorized to use this command.")
         return
@@ -202,21 +226,18 @@ async def post_to_me_handler(message):
     )
     for module in active_bot_modules:
         asyncio.create_task(module.run_scheduled_job(target_chat_ids=[message.chat.id]))
-        await asyncio.sleep(0.1)  # Small delay
+        await asyncio.sleep(0.1)
 
 
 @bot.my_chat_member_handler()
 async def my_chat_member_handler(message: telebot.types.ChatMemberUpdated):
-    """Handles bot being added to/removed from groups, updating global chat_ids."""
     if message.new_chat_member.status in ["member", "administrator"]:
         chat_id = message.chat.id
         chat_ids = config["telegram"]["chat_ids"]
         if chat_id not in chat_ids:
             chat_ids.append(chat_id)
             save_config_chats(chat_ids)
-            config["telegram"]["chat_ids"] = (
-                chat_ids  # Update in-memory config immediately
-            )
+            config["telegram"]["chat_ids"] = chat_ids
             logger.info(f"Bot added to new group: {chat_id}. Global config updated.")
             await bot.send_message(
                 chat_id,
@@ -228,109 +249,79 @@ async def my_chat_member_handler(message: telebot.types.ChatMemberUpdated):
         if chat_id in chat_ids:
             chat_ids.remove(chat_id)
             save_config_chats(chat_ids)
-            config["telegram"]["chat_ids"] = (
-                chat_ids  # Update in-memory config immediately
-            )
+            config["telegram"]["chat_ids"] = chat_ids
             logger.info(f"Bot removed from group: {chat_id}. Global config updated.")
 
 
-# --- Scheduler (Updated to handle multiple modules) ---
+# --- Scheduler ---
 async def background_scheduler():
-    """
-    Manages the scheduling of jobs for all active bot modules based on their configurations.
-    """
     logger.info("Scheduler: Starting background scheduler for modules.")
     while True:
         now = datetime.now(timezone.utc)
 
-        # Track the minimum sleep duration needed until the *next* scheduled event
-        min_sleep_duration_seconds = timedelta(
-            days=1
-        ).total_seconds()  # Default to max sleep
+        next_sleep_duration_seconds = timedelta(days=2).total_seconds()
+
+        tasks_to_run = []
+
+        if not active_bot_modules:
+            logger.warning("Scheduler: No active bot modules. Sleeping for 1 minute.")
+            await asyncio.sleep(60)
+            continue
 
         for module in active_bot_modules:
-            scheduler_cfg = module.module_config.get("scheduler", {})
-            time_str = scheduler_cfg.get("post_time_utc")
+            module_next_event_time = module.next_scheduled_event_time
 
-            if not time_str:
+            if module_next_event_time is None:
                 module.logger.debug(
-                    f"Module '{module.name}' has no 'post_time_utc' defined. Skipping scheduled run check."
+                    f"Scheduler: '{module.name}' has no future scheduled events."
                 )
                 continue
 
-            try:
-                post_hour, post_minute = map(int, time_str.split(":"))
-                target_time_today = now.replace(
-                    hour=post_hour, minute=post_minute, second=0, microsecond=0
+            # If the event is in the past or very nearly in the past (due now)
+            if now >= module_next_event_time - timedelta(
+                seconds=2
+            ):  # Small buffer for due check
+                logger.info(
+                    f"Scheduler: '{module.name}' event is DUE NOW (scheduled for {module_next_event_time.strftime('%H:%M:%S UTC')}). Calling process_due_event."
                 )
-
-                # If the target time for today has passed, schedule for the next day
-                # Else, it's a future time today.
-                effective_target_time = target_time_today
-                if now >= target_time_today:
-                    effective_target_time += timedelta(days=1)
-
-                # Check if this module's job should be run *now*
-                # This check ensures we run tasks that are due, and only once per day.
-                # We can add a simple state management here or rely on the small window approach.
-                # For simplicity and to avoid complex state, let's rely on the execution and next day calculation.
-
-                # If current time is past the target time for today (but not too far past)
-                # and it hasn't been run for today yet.
-                # A more robust solution would involve storing last_run_date for each module.
-                # For this example, let's use a simple heuristic: if `now` is past `target_time_today`
-                # and `effective_target_time` is still `target_time_today + 1 day`, it means
-                # the job for *today* is due or has just happened.
-
-                # Let's refine the logic to check if it's the right "day" for this time.
-                # If `now` is between `target_time_today` and `target_time_today + grace_period`
-                grace_period = timedelta(
-                    minutes=10
-                )  # Run within 10 minutes of scheduled time
-                if now >= target_time_today and now < (target_time_today + grace_period):
-                    module.logger.info(
-                        f"Scheduler: Executing '{module.name}' job (scheduled at {time_str} UTC)."
-                    )
-                    asyncio.create_task(module.run_scheduled_job())
-                else:
-                    module.logger.debug(
-                        f"Scheduler: '{module.name}' job not due yet or already processed for today. Next expected run at {effective_target_time} UTC."
+                tasks_to_run.append(module.process_due_event())
+            else:
+                sleep_for_this_module = (module_next_event_time - now).total_seconds()
+                if sleep_for_this_module > 0:
+                    next_sleep_duration_seconds = min(
+                        next_sleep_duration_seconds, sleep_for_this_module
                     )
 
-                # Calculate sleep duration needed to reach the *next* occurrence of this module's schedule
-                sleep_for_this_module = (effective_target_time - now).total_seconds()
-                min_sleep_duration_seconds = min(
-                    min_sleep_duration_seconds, sleep_for_this_module
-                )
+        if tasks_to_run:
+            logger.info(f"Scheduler: Executing {len(tasks_to_run)} due tasks.")
+            await asyncio.gather(*tasks_to_run, return_exceptions=True)
+            logger.debug(
+                "Scheduler: Tasks executed. Re-evaluating next sleep duration immediately."
+            )
+            await asyncio.sleep(1)
+            continue
 
-            except (ValueError, KeyError) as e:
-                module.logger.error(
-                    f"Invalid 'post_time_utc' for module '{module.name}': {e}. Skipping schedule for this module."
-                )
-
-        # Ensure minimum sleep is at least a few seconds to prevent tight loops
-        min_sleep_duration_seconds = max(
-            min_sleep_duration_seconds, 10
-        )  # Minimum 10 seconds sleep
+        next_sleep_duration_seconds = max(next_sleep_duration_seconds, 5)
         logger.info(
-            f"Scheduler: Next global check in {min_sleep_duration_seconds / 3600:.2f} hours ({min_sleep_duration_seconds} seconds)."
+            f"Scheduler: Next global check in {next_sleep_duration_seconds:.2f} seconds ({next_sleep_duration_seconds / 3600:.2f} hours)."
         )
+
         try:
-            await asyncio.sleep(min_sleep_duration_seconds)
+            await asyncio.sleep(next_sleep_duration_seconds)
         except asyncio.CancelledError:
             logger.info("Scheduler task cancelled.")
             break
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in background_scheduler: {e}")
+            await asyncio.sleep(5)
 
     logger.info("Scheduler task has finished.")
 
 
 async def polling_loop(shutdown_event: asyncio.Event):
-    """
-    A robust polling loop that processes Telegram updates.
-    """
     logger.info("Starting polling loop.")
     offset = 0
-    timeout = 10  # Seconds to wait for an update
+    timeout = 10
 
     while True:
         try:
@@ -344,16 +335,12 @@ async def polling_loop(shutdown_event: asyncio.Event):
             break
         except Exception as e:
             logger.error(f"An error occurred in the polling loop: {e}")
-            await asyncio.sleep(5)  # Wait before retrying on error
+            await asyncio.sleep(5)
 
     logger.info("Polling loop has finished.")
 
 
 async def config_reloader_task(interval_seconds=5):
-    """
-    Periodically checks if the config needs to be reloaded from disk
-    and re-instantiates bot modules if needed.
-    """
     global config
     logger.info("Starting config reloader task.")
     while True:
@@ -363,7 +350,7 @@ async def config_reloader_task(interval_seconds=5):
                     "Reload signal received. Reloading config from file and re-instantiating modules."
                 )
                 config = load_and_merge_config()
-                instantiate_bot_modules()  # Re-instantiate modules after config reload
+                instantiate_bot_modules()
                 main_app_instance.reload_config_signal = False
                 logger.info("Config reloaded and modules re-instantiated successfully.")
             await asyncio.sleep(interval_seconds)
@@ -376,16 +363,15 @@ async def config_reloader_task(interval_seconds=5):
 
 
 async def main():
-    """Main entry point to load config, set up signal handlers, and start all services."""
     global config
     config = load_and_merge_config()
-    instantiate_bot_modules()  # Initial instantiation of modules at startup
+    instantiate_bot_modules()
 
     shutdown_event = asyncio.Event()
 
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -405,16 +391,13 @@ async def main():
 
     scheduler_task = asyncio.create_task(background_scheduler())
     polling_task = asyncio.create_task(polling_loop(shutdown_event))
-    config_reloader_task_obj = asyncio.create_task(
-        config_reloader_task()
-    )  # Store task object to cancel it
+    config_reloader_task_obj = asyncio.create_task(config_reloader_task())
 
     async def run_server():
         await server.serve()
 
     web_server_task = asyncio.create_task(run_server())
 
-    # The application now waits here until initiate_shutdown() sets the event.
     await shutdown_event.wait()
 
     logger.info("Shutdown event received. Cleaning up all tasks...")
@@ -425,7 +408,7 @@ async def main():
     server.should_exit = True
     scheduler_task.cancel()
     polling_task.cancel()
-    config_reloader_task_obj.cancel()  # Cancel the reloader task
+    config_reloader_task_obj.cancel()
 
     await asyncio.gather(
         scheduler_task,
