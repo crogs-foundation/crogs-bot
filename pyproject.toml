@@ -4,7 +4,28 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "g4f[async]>=0.6.0.1",
+    "pytelegrambotapi>=4.28.0",
+    "python-dotenv>=1.1.1",
+    "pyyaml>=6.0.2",
+    "requests>=2.32.4",
+    "schedule>=1.2.2",
+    "taskipy>=1.14.1",
+    "watchfiles>=1.1.0",
+]
+
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+    "ruff>=0.12.8",
+]
+
+[tool.taskipy.tasks] # uv run task <name>
+prod = "uv run main.py --mode prod"
+dev = "watchfiles 'uv run main.py --mode dev' --filter python --sigint-timeout 0"
 
 
 [tool.ruff]
@@ -16,9 +37,3 @@ line-length=90
 [tool.ruff.lint]
 extend-select = ["I"]
 ignore=["E402"]
-
-[dependency-groups]
-dev = [
-    "pre-commit>=4.3.0",
-    "ruff>=0.12.8",
-]
