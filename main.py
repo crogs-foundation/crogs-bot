@@ -2,20 +2,22 @@ import argparse
 import asyncio
 import os
 import signal
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
-import requests
 import telebot
 import uvicorn
 import yaml
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
 
+from src.bot_modules.base import BotModule
+from src.bot_modules.holibot import HoliBotModule
+
+# Import the base module class and specific module implementations
+from src.bot_modules.jokebot import JokeGeneratorModule
 from src.logger import Logger
-from src.web_api import app, main_app_instance  # Import main_app_instance here
+from src.web_api import app, main_app_instance
 
 # --- Load Environment Variables FIRST ---
 load_dotenv()
@@ -41,169 +43,97 @@ if not TELEGRAM_BOT_TOKEN:
 
 CONFIG_FILE = "config.yaml"
 bot = AsyncTeleBot(TELEGRAM_BOT_TOKEN)
-client = AsyncClient()
-config = {}
+client = AsyncClient()  # g4f client, passed to modules
+config = {}  # Global config dictionary
+
+# Global list to hold instantiated bot modules
+active_bot_modules: list[BotModule] = []
 
 
 # --- Config Management ---
 def load_and_merge_config():
-    DEFAULTS = {
-        "telegram": {
-            "admin_ids": [],
-            "chat_ids": [],
-            "caption_character_limit": 1024,
-            "post_delay_seconds": 1,
-        },
-        "scheduler": {"post_time_utc": "08:00"},
-        "scraper": {"holiday_url": "https://www.checkiday.com/", "holiday_limit": 0},
-        "llm": {
-            "concurrency_limit": 4,
-            "text_model": "gpt-3.5-turbo",
-            "image_model": "dall-e-3",
-            "text_prompt": "Generate a short, funny caption for '{holiday_name}'.",
-            "image_prompt": "A humorous image for '{holiday_name}'.",
-        },
-        "webapp": {"url": "https://127.0.0.1:8000"},
-    }
+    """
+    Loads user config, merges with defaults, and ensures config.yaml exists and is up-to-date.
+    """
     try:
         with open(CONFIG_FILE, "r") as f:
-            user_config = yaml.safe_load(f) or {}
-    except FileNotFoundError:
+            return yaml.safe_load(f)
+    except FileNotFoundError as e:
         logger.warning(f"'{CONFIG_FILE}' not found. Creating it with default values.")
-        with open(CONFIG_FILE, "w") as f:
-            yaml.dump(DEFAULTS, f, sort_keys=False)
-        return DEFAULTS
-
-    merged_config = deepcopy(DEFAULTS)
-    for key, value in user_config.items():
-        if isinstance(value, dict):
-            merged_config[key] = deepcopy(merged_config.get(key, {}))
-            merged_config[key].update(value)
-        else:
-            merged_config[key] = value
-
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(merged_config, f, sort_keys=False, indent=2)
-
-    return merged_config
+        raise e
 
 
 def save_config_chats(chat_ids):
-    current_config = load_and_merge_config()
+    """Saves the updated list of chat IDs to the config file."""
+    current_config = load_and_merge_config()  # Reload to get the latest base config
     current_config["telegram"]["chat_ids"] = chat_ids
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(current_config, f, sort_keys=False, indent=2)
 
 
-def get_todays_holidays(cfg):
-    try:
-        url, limit = cfg["scraper"]["holiday_url"], cfg["scraper"]["holiday_limit"]
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        elements = [
-            h.text.strip() for h in soup.find_all("h2", class_="mdl-card__title-text")
-        ]
-        return elements[:limit] if limit > 0 else elements
-    except requests.exceptions.RequestException:
-        logger.error("Error fetching holidays")
-        return []
+def instantiate_bot_modules():
+    """
+    Instantiates enabled bot modules based on the current configuration.
+    Clears existing module instances and registers their handlers.
+    """
+    global active_bot_modules
+    active_bot_modules.clear()  # Remove old instances (important for config reloads)
 
+    # Map 'type' strings from config to actual BotModule classes
+    module_classes = {
+        "HoliBot": HoliBotModule,
+        "JokeGenerator": JokeGeneratorModule,  # <--- Add this line
+        # Add other module types here as they are developed:
+        # "JokeGenerator": JokeGeneratorModule,
+        # "NewsScraper": NewsScraperModule,
+    }
 
-async def generate_caption(holiday_name, cfg):
-    try:
-        prompt, model = (
-            cfg["llm"]["text_prompt"].format(holiday_name=holiday_name),
-            cfg["llm"]["text_model"],
-        )
-        response = await client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception:
-        logger.error(f"Error generating caption for {holiday_name}")
-        return f"Happy {holiday_name}!"
-
-
-async def generate_image(holiday_name, cfg):
-    try:
-        prompt, model = (
-            cfg["llm"]["image_prompt"].format(holiday_name=holiday_name),
-            cfg["llm"]["image_model"],
-        )
-        response = await client.images.generate(
-            model=model, prompt=prompt, response_format="url"
-        )
-        image_url = response.data[0].url
-        if image_url and image_url.startswith("http"):
-            return image_url
-        logger.warning(
-            f"Image generation returned invalid URL for {holiday_name}: {image_url}"
-        )
-        return None
-    except Exception:
-        logger.error(f"Error generating image for {holiday_name}")
-        return None
-
-
-async def generate_holiday_content(holiday_name, semaphore, cfg):
-    async with semaphore:
-        logger.debug(f"Generating content for '{holiday_name}'...")
-        caption, image_url = await asyncio.gather(
-            generate_caption(holiday_name, cfg), generate_image(holiday_name, cfg)
-        )
-        logger.debug(f"Finished content for '{holiday_name}'.")
-        return holiday_name, caption, image_url
-
-
-async def post_holidays(target_chat_ids=None):
-    logger.info("Holiday job started.")
-    holidays = await asyncio.to_thread(get_todays_holidays, config)
-    post_to_chats = (
-        target_chat_ids if target_chat_ids is not None else config["telegram"]["chat_ids"]
-    )
-    if not holidays or not post_to_chats:
-        logger.warning("No holidays or chats found. Job aborted.")
-        return
-    concurrency, caption_limit, post_delay = (
-        config["llm"]["concurrency_limit"],
-        config["telegram"]["caption_character_limit"],
-        config["telegram"]["post_delay_seconds"],
-    )
-    logger.info(
-        f"Found {len(holidays)} holidays. Generating content with concurrency {concurrency}."
-    )
-    semaphore = asyncio.Semaphore(concurrency)
-    tasks = [generate_holiday_content(h, semaphore, config) for h in holidays]
-    generated_content = await asyncio.gather(*tasks)
-    logger.info(f"Content generation complete. Posting to {len(post_to_chats)} chat(s).")
-    for holiday, caption, image_url in generated_content:
-        if len(caption) > caption_limit:
-            caption = caption[: caption_limit - 3] + "..."
-        for chat_id in post_to_chats:
-            try:
-                if image_url:
-                    await bot.send_photo(chat_id, image_url, caption=caption)
+    if "parts" in config and isinstance(config["parts"], dict):
+        for part_name, part_cfg in config["parts"].items():
+            if part_cfg.get("enabled", False):
+                module_type = part_cfg.get("type")
+                if module_type in module_classes:
+                    module_class = module_classes[module_type]
+                    try:
+                        module_instance = module_class(
+                            bot=bot,
+                            client=client,
+                            module_config=part_cfg,
+                            global_config=config,  # Pass global config for shared data like chat_ids
+                            logger=logger,
+                        )
+                        active_bot_modules.append(module_instance)
+                        module_instance.register_handlers()  # Call module to register its specific handlers
+                        logger.info(
+                            f"Module '{part_name}' ({module_type}) loaded and handlers registered."
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to load module '{part_name}' ({module_type}): {e}"
+                        )
                 else:
-                    await bot.send_message(chat_id, caption)
-                await asyncio.sleep(post_delay)
-            except telebot.apihelper.ApiTelegramException as e:
-                logger.error(
-                    f"Telegram API Error sending to {chat_id} for {holiday}: {e}"
-                )
-    logger.info("Holiday job finished.")
+                    logger.warning(
+                        f"Unknown module type '{module_type}' for part '{part_name}'. Skipping."
+                    )
+            else:
+                logger.info(f"Module '{part_name}' is disabled in config. Skipping.")
+    else:
+        logger.warning("No 'parts' section found or it's invalid in config.yaml.")
 
 
-# --- Command Handlers (No changes) ---
+# --- Command Handlers (Global - affecting all enabled modules) ---
 @bot.message_handler(commands=["start", "help"])
 async def send_welcome(message):
-    await bot.reply_to(message, "...")
+    await bot.reply_to(
+        message,
+        "Hello! I am a modular bot. Check my /settings or ask admins for more info.",
+    )
 
 
 @bot.message_handler(commands=["settings"])
 async def settings_handler(message):
     if message.from_user.id not in config["telegram"]["admin_ids"]:
-        await bot.reply_to(message, "Sorry, you are not authorized.")
+        await bot.reply_to(message, "Sorry, you are not authorized to access settings.")
         return
 
     try:
@@ -237,65 +167,166 @@ async def settings_handler(message):
 
 @bot.message_handler(commands=["postnow"])
 async def post_now_handler(message):
+    """Triggers run_scheduled_job for all active modules to all configured chats."""
     if message.from_user.id not in config["telegram"]["admin_ids"]:
-        await bot.reply_to(message, "Sorry, you are not authorized.")
+        await bot.reply_to(message, "Sorry, you are not authorized to use this command.")
         return
-    await bot.reply_to(message, "Authorized! Posting to all chats...")
-    asyncio.create_task(post_holidays())
+
+    if not active_bot_modules:
+        await bot.reply_to(message, "No bot modules are currently active to post.")
+        return
+
+    await bot.reply_to(
+        message,
+        "Authorized! Triggering all active modules to post to all configured chats...",
+    )
+    for module in active_bot_modules:
+        asyncio.create_task(module.run_scheduled_job())
+        await asyncio.sleep(0.1)  # Small delay to avoid overwhelming the event loop
 
 
 @bot.message_handler(commands=["posttome"])
 async def post_to_me_handler(message):
+    """Triggers run_scheduled_job for all active modules, but only to the sender's chat."""
     if message.from_user.id not in config["telegram"]["admin_ids"]:
-        await bot.reply_to(message, "Sorry, you are not authorized.")
+        await bot.reply_to(message, "Sorry, you are not authorized to use this command.")
         return
-    await bot.reply_to(message, "Authorized! Posting just for you...")
-    asyncio.create_task(post_holidays(target_chat_ids=[message.chat.id]))
+
+    if not active_bot_modules:
+        await bot.reply_to(message, "No bot modules are currently active to post.")
+        return
+
+    await bot.reply_to(
+        message,
+        f"Authorized! Triggering all active modules to post just for you in chat {message.chat.id}...",
+    )
+    for module in active_bot_modules:
+        asyncio.create_task(module.run_scheduled_job(target_chat_ids=[message.chat.id]))
+        await asyncio.sleep(0.1)  # Small delay
 
 
 @bot.my_chat_member_handler()
 async def my_chat_member_handler(message: telebot.types.ChatMemberUpdated):
+    """Handles bot being added to/removed from groups, updating global chat_ids."""
     if message.new_chat_member.status in ["member", "administrator"]:
-        chat_id, chat_ids = message.chat.id, config["telegram"]["chat_ids"]
+        chat_id = message.chat.id
+        chat_ids = config["telegram"]["chat_ids"]
         if chat_id not in chat_ids:
             chat_ids.append(chat_id)
             save_config_chats(chat_ids)
-            config["telegram"]["chat_ids"] = chat_ids
-            logger.info(f"Bot added to new group: {chat_id}. Config updated.")
-            await bot.send_message(chat_id, "Hello! I will now post daily holidays here.")
+            config["telegram"]["chat_ids"] = (
+                chat_ids  # Update in-memory config immediately
+            )
+            logger.info(f"Bot added to new group: {chat_id}. Global config updated.")
+            await bot.send_message(
+                chat_id,
+                "Hello! I have been added to this chat. My modules will now be able to post here.",
+            )
+    elif message.new_chat_member.status == "kicked":
+        chat_id = message.chat.id
+        chat_ids = config["telegram"]["chat_ids"]
+        if chat_id in chat_ids:
+            chat_ids.remove(chat_id)
+            save_config_chats(chat_ids)
+            config["telegram"]["chat_ids"] = (
+                chat_ids  # Update in-memory config immediately
+            )
+            logger.info(f"Bot removed from group: {chat_id}. Global config updated.")
 
 
-# --- Scheduler (No changes) ---
+# --- Scheduler (Updated to handle multiple modules) ---
 async def background_scheduler():
+    """
+    Manages the scheduling of jobs for all active bot modules based on their configurations.
+    """
+    logger.info("Scheduler: Starting background scheduler for modules.")
     while True:
-        try:
-            time_str = config["scheduler"]["post_time_utc"]
-            post_hour, post_minute = map(int, time_str.split(":"))
-        except (ValueError, KeyError):
-            logger.error("Invalid 'post_time_utc'. Defaulting to 08:00.")
-            post_hour, post_minute = 8, 0
         now = datetime.now(timezone.utc)
-        target_time = now.replace(
-            hour=post_hour, minute=post_minute, second=0, microsecond=0
-        )
-        if now > target_time:
-            target_time += timedelta(days=1)
-        sleep_duration = (target_time - now).total_seconds()
+
+        # Track the minimum sleep duration needed until the *next* scheduled event
+        min_sleep_duration_seconds = timedelta(
+            days=1
+        ).total_seconds()  # Default to max sleep
+
+        for module in active_bot_modules:
+            scheduler_cfg = module.module_config.get("scheduler", {})
+            time_str = scheduler_cfg.get("post_time_utc")
+
+            if not time_str:
+                module.logger.debug(
+                    f"Module '{module.name}' has no 'post_time_utc' defined. Skipping scheduled run check."
+                )
+                continue
+
+            try:
+                post_hour, post_minute = map(int, time_str.split(":"))
+                target_time_today = now.replace(
+                    hour=post_hour, minute=post_minute, second=0, microsecond=0
+                )
+
+                # If the target time for today has passed, schedule for the next day
+                # Else, it's a future time today.
+                effective_target_time = target_time_today
+                if now >= target_time_today:
+                    effective_target_time += timedelta(days=1)
+
+                # Check if this module's job should be run *now*
+                # This check ensures we run tasks that are due, and only once per day.
+                # We can add a simple state management here or rely on the small window approach.
+                # For simplicity and to avoid complex state, let's rely on the execution and next day calculation.
+
+                # If current time is past the target time for today (but not too far past)
+                # and it hasn't been run for today yet.
+                # A more robust solution would involve storing last_run_date for each module.
+                # For this example, let's use a simple heuristic: if `now` is past `target_time_today`
+                # and `effective_target_time` is still `target_time_today + 1 day`, it means
+                # the job for *today* is due or has just happened.
+
+                # Let's refine the logic to check if it's the right "day" for this time.
+                # If `now` is between `target_time_today` and `target_time_today + grace_period`
+                grace_period = timedelta(
+                    minutes=10
+                )  # Run within 10 minutes of scheduled time
+                if now >= target_time_today and now < (target_time_today + grace_period):
+                    module.logger.info(
+                        f"Scheduler: Executing '{module.name}' job (scheduled at {time_str} UTC)."
+                    )
+                    asyncio.create_task(module.run_scheduled_job())
+                else:
+                    module.logger.debug(
+                        f"Scheduler: '{module.name}' job not due yet or already processed for today. Next expected run at {effective_target_time} UTC."
+                    )
+
+                # Calculate sleep duration needed to reach the *next* occurrence of this module's schedule
+                sleep_for_this_module = (effective_target_time - now).total_seconds()
+                min_sleep_duration_seconds = min(
+                    min_sleep_duration_seconds, sleep_for_this_module
+                )
+
+            except (ValueError, KeyError) as e:
+                module.logger.error(
+                    f"Invalid 'post_time_utc' for module '{module.name}': {e}. Skipping schedule for this module."
+                )
+
+        # Ensure minimum sleep is at least a few seconds to prevent tight loops
+        min_sleep_duration_seconds = max(
+            min_sleep_duration_seconds, 10
+        )  # Minimum 10 seconds sleep
         logger.info(
-            f"Scheduler: Next run at {target_time} UTC. Sleeping for {sleep_duration / 3600:.2f} hours."
+            f"Scheduler: Next global check in {min_sleep_duration_seconds / 3600:.2f} hours ({min_sleep_duration_seconds} seconds)."
         )
         try:
-            await asyncio.sleep(sleep_duration)
+            await asyncio.sleep(min_sleep_duration_seconds)
         except asyncio.CancelledError:
             logger.info("Scheduler task cancelled.")
             break
-        logger.info("Scheduler: Waking up for daily job.")
-        await post_holidays()
+
+    logger.info("Scheduler task has finished.")
 
 
 async def polling_loop(shutdown_event: asyncio.Event):
     """
-    A robust polling loop that is guaranteed to stop on cancellation.
+    A robust polling loop that processes Telegram updates.
     """
     logger.info("Starting polling loop.")
     offset = 0
@@ -313,25 +344,28 @@ async def polling_loop(shutdown_event: asyncio.Event):
             break
         except Exception as e:
             logger.error(f"An error occurred in the polling loop: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(5)  # Wait before retrying on error
 
     logger.info("Polling loop has finished.")
 
 
-# --- NEW: Config Reloader Task ---
 async def config_reloader_task(interval_seconds=5):
     """
-    Periodically checks if the config needs to be reloaded from disk.
+    Periodically checks if the config needs to be reloaded from disk
+    and re-instantiates bot modules if needed.
     """
-    global config  # Declare intent to modify global config
+    global config
     logger.info("Starting config reloader task.")
     while True:
         try:
             if main_app_instance.reload_config_signal:
-                logger.info("Reload signal received. Reloading config from file.")
+                logger.info(
+                    "Reload signal received. Reloading config from file and re-instantiating modules."
+                )
                 config = load_and_merge_config()
+                instantiate_bot_modules()  # Re-instantiate modules after config reload
                 main_app_instance.reload_config_signal = False
-                logger.info("Config reloaded successfully.")
+                logger.info("Config reloaded and modules re-instantiated successfully.")
             await asyncio.sleep(interval_seconds)
         except asyncio.CancelledError:
             logger.info("Config reloader task cancelled.")
@@ -345,12 +379,13 @@ async def main():
     """Main entry point to load config, set up signal handlers, and start all services."""
     global config
     config = load_and_merge_config()
+    instantiate_bot_modules()  # Initial instantiation of modules at startup
 
     shutdown_event = asyncio.Event()
 
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:
+    except RuntimeError:  # 'RuntimeError: There is no current event loop...'
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -370,13 +405,16 @@ async def main():
 
     scheduler_task = asyncio.create_task(background_scheduler())
     polling_task = asyncio.create_task(polling_loop(shutdown_event))
-    config_reloader = asyncio.create_task(config_reloader_task())  # Launch the new task
+    config_reloader_task_obj = asyncio.create_task(
+        config_reloader_task()
+    )  # Store task object to cancel it
 
     async def run_server():
         await server.serve()
 
     web_server_task = asyncio.create_task(run_server())
 
+    # The application now waits here until initiate_shutdown() sets the event.
     await shutdown_event.wait()
 
     logger.info("Shutdown event received. Cleaning up all tasks...")
@@ -387,12 +425,12 @@ async def main():
     server.should_exit = True
     scheduler_task.cancel()
     polling_task.cancel()
-    config_reloader.cancel()  # Cancel the new task
+    config_reloader_task_obj.cancel()  # Cancel the reloader task
 
     await asyncio.gather(
         scheduler_task,
         polling_task,
-        config_reloader,
+        config_reloader_task_obj,
         web_server_task,
         return_exceptions=True,
     )
