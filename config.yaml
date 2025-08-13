@@ -11,12 +11,12 @@ parts:
     enabled: true
     type: HoliBot
     scheduler:
-      post_time_utc: '21:19'
-      post_start_time_utc: '21:20'
-      post_end_time_utc: '21:21'
+      post_time_utc: '22:35'
+      post_start_time_utc: '22:36'
+      post_end_time_utc: '22:37'
     scraper:
       holiday_url: https://www.checkiday.com/
-      holiday_limit: 1
+      holiday_limit: 2
     llm:
       concurrency_limit: 5
       text_model: qwen-3-32b
@@ -31,12 +31,11 @@ parts:
   jokebot:
     enabled: true
     type: JokeGenerator
-    scheduler:
-      post_time_utc: '12:00'
     llm:
-      text_model: evil
+      text_model: qwen-3-30b
       joke_prompt: Tell me a short hilarious joke
       joke_prompt_with_topic: Tell me a short, funny joke about {topic}.
     telegram_settings:
       post_delay_seconds: 1
-    _last_scheduled_joke_date: '2025-08-13'
+      batch_size: 5
+      batch_delay_seconds: 2
