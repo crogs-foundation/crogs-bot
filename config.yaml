@@ -53,3 +53,9 @@ parts:
       post_delay_seconds: 1
       batch_size: 5
       batch_delay_seconds: 2
+  imagebot:
+    enabled: true
+    llm:
+      image_model: "flux-dev"
+      # image_prompt_template: "cinematic, high-detail photo of: {prompt}"
+      image_prompt_template: "{prompt}"

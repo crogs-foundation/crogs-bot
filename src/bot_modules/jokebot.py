@@ -1,4 +1,5 @@
 # src/bot_modules/jokebot.py
+import asyncio
 import re
 from datetime import datetime
 from typing import Callable, Optional
@@ -46,6 +47,28 @@ class JokeGeneratorModule(BotModule):
             f"JokeGeneratorModule '{self.name}' initialized (scheduled posting disabled)."
         )
 
+    async def _handle_joke_request(self, message, topic, target_lang):
+        """
+        Handles the long-running process of generating and sending a joke
+        in a background task. This prevents blocking the main bot loop.
+        """
+        try:
+            joke = await self._generate_joke(topic, target_lang)
+            await self._post_joke(
+                joke, target_chat_ids=[message.chat.id], target_lang=target_lang
+            )
+        except Exception as e:
+            self.logger.error(f"Error in background joke generation task: {e}")
+            try:
+                # Try to inform the user about the failure
+                error_text = "I tried to think of a joke, but my circuits fizzled. Please try again later."
+                translated_error = await self.translator.translate(
+                    error_text, target_lang
+                )
+                await self.bot.reply_to(message, translated_error)
+            except Exception as send_e:
+                self.logger.error(f"Failed to send error message to user: {send_e}")
+
     def register_handlers(self):
         """Register the /joke command handler."""
 
@@ -57,22 +80,18 @@ class JokeGeneratorModule(BotModule):
             # --- Authorization Check with Translation ---
             if user_id not in self.global_config["telegram"]["admin_ids"]:
                 auth_err_text = "Sorry, you are not authorized to request jokes."
-                # 1. Await the translation FIRST
                 translated_err = await self.translator.translate(
                     auth_err_text, target_lang
                 )
-                # 2. Then await the bot action with the result
                 await self.bot.reply_to(message, translated_err)
                 return
 
             # --- Module Enablement Check with Translation ---
             if not self.is_enabled_for_chat(message.chat.id):
                 enabled_err_text = f"The '{self.name}' module is disabled for this chat. An admin can enable it in the settings."
-                # 1. Await the translation FIRST
                 translated_err = await self.translator.translate(
                     enabled_err_text, target_lang
                 )
-                # 2. Then await the bot action with the result
                 await self.bot.reply_to(message, translated_err)
                 return
 
@@ -83,15 +102,13 @@ class JokeGeneratorModule(BotModule):
 
             # --- Generating Message with Translation ---
             reply_text = f"Generating a joke{' about ' + topic if topic else '...'}"
-            # 1. Await the translation FIRST
             translated_reply = await self.translator.translate(reply_text, target_lang)
-            # 2. Then await the bot action with the result
             await self.bot.reply_to(message, translated_reply)
 
-            joke = await self._generate_joke(topic, target_lang)
-            await self._post_joke(
-                joke, target_chat_ids=[message.chat.id], target_lang=target_lang
-            )
+            # --- NON-BLOCKING CALL ---
+            # Schedule the slow part to run in the background and return control
+            # to the bot's event loop immediately.
+            asyncio.create_task(self._handle_joke_request(message, topic, target_lang))
 
     async def _generate_joke(
         self, topic: Optional[str] = None, target_lang: str = "en"

@@ -19,6 +19,7 @@ from telebot.types import (
 
 from src.bot_modules.base import BotModule
 from src.bot_modules.holibot import HoliBotModule
+from src.bot_modules.imagebot import ImageGeneratorModule
 from src.bot_modules.jokebot import JokeGeneratorModule
 from src.logger import Logger
 from src.translator import Translator  # <-- IMPORT (same as before)
@@ -103,7 +104,11 @@ def instantiate_bot_modules():
         getattr(module, "close", lambda: None)()
     active_bot_modules.clear()
 
-    module_classes = {"holibot": HoliBotModule, "jokebot": JokeGeneratorModule}
+    module_classes = {
+        "holibot": HoliBotModule,
+        "jokebot": JokeGeneratorModule,
+        "imagebot": ImageGeneratorModule,
+    }
 
     for name, part_cfg in config.get("parts", {}).items():
         if not part_cfg.get("enabled"):
