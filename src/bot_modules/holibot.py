@@ -2,7 +2,8 @@
 import asyncio
 import json
 from asyncio import QueueEmpty
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, List, Optional
 
 import requests
@@ -14,16 +15,22 @@ from src.bot_modules.base import BotModule
 STATE_FILE = "holibot_state.json"
 
 
+def get_language_for_chat(chat_id: int, global_config: dict) -> str:
+    """Gets the configured language for a chat, defaulting to 'en'."""
+    chat_settings = global_config.get("chat_module_settings", {}).get(str(chat_id), {})
+    return chat_settings.get("language", "en")
+
+
 class HoliBotModule(BotModule):
     """
     BotModule responsible for fetching and posting daily holidays.
-    State (including a pre-calculated post schedule and posted status) is persisted to disk.
     """
 
     def __init__(
         self,
         bot,
         client,
+        translator,  # Added translator
         module_config,
         global_config,
         logger,
@@ -33,6 +40,7 @@ class HoliBotModule(BotModule):
         super().__init__(
             bot,
             client,
+            translator,  # Pass to super
             module_config,
             global_config,
             logger,
@@ -40,17 +48,12 @@ class HoliBotModule(BotModule):
             is_module_enabled_for_chat_callback,
         )
         self.logger.info(f"HoliBotModule '{self.name}' initialized.")
-
         self._generated_content_queue: asyncio.Queue = asyncio.Queue()
-        self._last_generation_date: Optional[datetime.date] = None
-        # --- NEW: In-memory copy of the state for easy updates ---
+        self._last_generation_date: Optional[date] = None
         self._todays_posts: List[dict] = []
-
         self._load_state_from_disk()
-
         self.logger.info(
-            f"HoliBot state loaded. "
-            f"Last generation date: {self._last_generation_date}. "
+            f"HoliBot state loaded. Last generation date: {self._last_generation_date}. "
             f"Pending posts in queue: {self._generated_content_queue.qsize()}."
         )
 
@@ -398,66 +401,76 @@ class HoliBotModule(BotModule):
     async def _do_post_next_item(
         self, target_chat_ids: Optional[list[int]] = None, force_post_now=False
     ) -> bool:
-        if self.has_pending_posts:
-            # Get the item from the in-memory queue
-            if force_post_now:
-                holiday, caption, image_url, _ = await self._generated_content_queue.get()
-            else:
-                holiday, caption, image_url, post_time = (
-                    self._generated_content_queue.get_nowait()
-                )
-        else:
+        if not self.has_pending_posts:
             self.logger.debug("Post queue is empty. No items to post.")
             return False
+
+        if force_post_now:
+            holiday, caption, image_url, _ = await self._generated_content_queue.get()
+        else:
+            holiday, caption, image_url, post_time = (
+                self._generated_content_queue.get_nowait()
+            )
+
+        english_caption = caption  # The generated caption is always English
 
         all_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
         post_to_chats = [
             chat_id for chat_id in all_chats if self.is_enabled_for_chat(chat_id)
         ]
 
-        # --- MODIFIED: Mark as posted/skipped even if no chats are enabled ---
         post_status = "posted" if post_to_chats else "skipped"
-
-        # Find the corresponding record in our in-memory list and update its status
         for post_record in self._todays_posts:
             if post_record["holiday_name"] == holiday:
                 post_record["status"] = post_status
                 break
-
-        # Save the updated state to disk immediately
         await self._save_state_to_disk()
 
         if not post_to_chats:
             self.logger.warning(
                 f"No enabled chats found to post '{holiday}'. Marked as '{post_status}'."
             )
-            return True  # Successfully processed by skipping
+            return True
 
-        try:
+        # --- EFFICIENT BATCHING LOGIC ---
+
+        # 1. Group chat IDs by their configured language
+        lang_to_chats = defaultdict(list)
+        for chat_id in post_to_chats:
+            lang = get_language_for_chat(chat_id, self.global_config)
+            lang_to_chats[lang].append(chat_id)
+
+        self.logger.info(
+            f"Posting '{holiday}'. Grouped {len(post_to_chats)} chats into {len(lang_to_chats)} language(s)."
+        )
+
+        # 2. Iterate over the language groups and post
+        for lang, chat_ids in lang_to_chats.items():
+            final_caption = english_caption
+            # Only call the translation API if the language is not English
+            if lang.lower() not in ["en", "en-us"]:
+                self.logger.debug(f"Translating caption for '{holiday}' to '{lang}'.")
+                final_caption = await self.translator.translate(english_caption, lang)
+
             telegram_cfg = self.module_config.get("telegram_settings", {})
             caption_limit = telegram_cfg.get("caption_character_limit", 1024)
-            if len(caption) > caption_limit:
-                caption = caption[: caption_limit - 3] + "..."
+            if len(final_caption) > caption_limit:
+                final_caption = final_caption[: caption_limit - 3] + "..."
 
-            self.logger.info(
-                f"Posting '{holiday}' to {len(post_to_chats)} enabled chat(s)."
-            )
-            for chat_id in post_to_chats:
+            self.logger.debug(f"Sending to {len(chat_ids)} chat(s) in '{lang}'.")
+            for chat_id in chat_ids:
                 try:
                     if image_url:
-                        await self.bot.send_photo(chat_id, image_url, caption=caption)
+                        await self.bot.send_photo(
+                            chat_id, image_url, caption=final_caption
+                        )
                     else:
-                        await self.bot.send_message(chat_id, caption)
+                        await self.bot.send_message(chat_id, final_caption)
                 except ApiTelegramException as e:
                     self.logger.error(
                         f"Telegram API Error sending to {chat_id} for {holiday}: {e}"
                     )
-                    # If sending fails, we don't change the status back, it remains 'posted'
-                    # to prevent retries. This could be changed if retries are desired.
 
-            if not self.has_pending_posts:
-                self.logger.info("Last item posted for today. Queue is now empty.")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error while processing next post for '{holiday}': {e}")
-            return False
+        if not self.has_pending_posts:
+            self.logger.info("Last item posted for today. Queue is now empty.")
+        return True

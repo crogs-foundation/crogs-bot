@@ -5,18 +5,26 @@ telegram:
     - "@dsomni_test_channel"
     - "-4883974576"
 
+translation:
+  # "response": Keep prompts in English, translate only the final text from the LLM. (Recommended)
+  # "prompt": Translate the prompt to the target language before sending to the LLM.
+  # strategy: "response"
+  strategy: "prompt"
+
 chat_module_settings: # By default all are enabled (if possible)
   "@dsomni_test_channel":
     jokebot: false
+    language: "zh-cn" # Target language for this chat (Chinese, Simplified)
   "-4883974576":
     holibot: false
+    language: "ru" # Target language for this chat (Russian)
 
 webapp:
   url: https://f6e2268f5aa0.ngrok-free.app/
+
 parts:
   holibot:
     enabled: true
-    type: "HoliBot"
     scheduler:
       post_time_utc: "23:23"
       post_start_time_utc: "23:26"
@@ -37,7 +45,6 @@ parts:
       post_delay_seconds: 1
   jokebot:
     enabled: true
-    type: "JokeGenerator"
     llm:
       text_model: qwen-3-30b
       joke_prompt: "Tell me a hilarious joke up to 2000 symbols"

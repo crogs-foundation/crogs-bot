@@ -7,6 +7,7 @@ from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
 
 from src.logger import Logger
+from src.translator import Translator  # <-- ADDED: Import the Translator for type hinting
 
 
 class BotModule(ABC):
@@ -19,6 +20,7 @@ class BotModule(ABC):
         self,
         bot: AsyncTeleBot,
         client: AsyncClient,
+        translator: Translator,  # <-- ADDED: The translator service instance
         module_config: dict,
         global_config: dict,
         logger: Logger,
@@ -29,6 +31,7 @@ class BotModule(ABC):
         Args:
             bot: Telegram bot instance.
             client: g4f client instance for LLM interactions.
+            translator: Service for handling text translations.
             module_config: Configuration specific to this module.
             global_config: The entire loaded application configuration.
             logger: Application logger instance.
@@ -37,6 +40,7 @@ class BotModule(ABC):
         """
         self.bot = bot
         self.client = client
+        self.translator = translator  # <-- ADDED: Store the translator instance
         self.module_config = module_config
         self.global_config = global_config
         self.name = module_config.get("name", self.__class__.__name__)

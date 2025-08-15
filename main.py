@@ -21,6 +21,7 @@ from src.bot_modules.base import BotModule
 from src.bot_modules.holibot import HoliBotModule
 from src.bot_modules.jokebot import JokeGeneratorModule
 from src.logger import Logger
+from src.translator import Translator  # <-- IMPORT (same as before)
 from src.web_api import app, main_app_instance
 
 # --- Load environment variables ---
@@ -31,6 +32,9 @@ parser = argparse.ArgumentParser(description="Telegram Holiday Bot")
 parser.add_argument("--mode", type=str, choices=["dev", "prod"], default="prod")
 args = parser.parse_args()
 DEV_MODE = args.mode == "dev"
+
+
+translator: Translator = None
 
 # --- Logger ---
 logger = Logger(
@@ -110,9 +114,11 @@ def instantiate_bot_modules():
             logger.warning(f"Unknown module name '{name}'. Skipping.")
             continue
         try:
+            # --- MODIFIED: Pass the translator instance to the module's constructor ---
             instance = module_cls(
                 bot=bot,
                 client=client,
+                translator=translator,  # <-- MODIFIED: Inject translator
                 module_config=part_cfg,
                 global_config=config,
                 logger=logger,
@@ -125,7 +131,7 @@ def instantiate_bot_modules():
             )
             instance.register_handlers()
             active_bot_modules.append(instance)
-            logger.info(f"Module '{name}'  loaded.")
+            logger.info(f"Module '{name}' loaded.")
         except Exception as e:
             logger.error(f"Failed to load module '{name}': {e}")
 
@@ -135,6 +141,13 @@ def instantiate_bot_modules():
 
 def is_admin(user_id: int) -> bool:
     return user_id in config.get("telegram", {}).get("admin_ids", [])
+
+
+# <-- ADDED: Central helper for getting chat language -->
+def get_language_for_chat(chat_id: int) -> str:
+    """Gets the configured language for a chat from the global config, defaulting to 'en'."""
+    chat_settings = config.get("chat_module_settings", {}).get(str(chat_id), {})
+    return chat_settings.get("language", "en")
 
 
 def is_module_enabled_for_chat(
@@ -328,8 +341,12 @@ async def config_reloader(interval_seconds=5):
 
 
 async def main():
-    global config
+    global config, translator
     config = load_config()
+
+    translator = Translator(logger=logger)
+    await translator.check_api()
+
     instantiate_bot_modules()
 
     shutdown_event = asyncio.Event()
