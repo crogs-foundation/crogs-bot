@@ -2,40 +2,38 @@ telegram:
   admin_ids:
     - 424826379
   chat_ids:
-    - "@dsomni_test_channel"
+    - "-1002777148413"
     - "-4883974576"
-
 translation:
   # "response": Keep prompts in English, translate only the final text from the LLM. (Recommended)
   # "prompt": Translate the prompt to the target language before sending to the LLM.
-  # strategy: "response"
   strategy: "prompt"
-
-chat_module_settings: # By default all are enabled (if possible)
-  "@dsomni_test_channel":
+chat_module_settings:
+  "-1002777148413":
     jokebot: false
-    language: "zh-cn" # Target language for this chat (Chinese, Simplified)
+    language: "zh-cn"
+    holibot: true
   "-4883974576":
-    holibot: false
-    language: "ru" # Target language for this chat (Russian)
-
+    holibot: true
+    newsbot: true
+    language: "ru"
 webapp:
-  url: https://f6e2268f5aa0.ngrok-free.app/
-
+  url: "https://f6e2268f5aa0.ngrok-free.app/"
 parts:
   holibot:
     enabled: true
+    default_enabled_on_join: false
     scheduler:
-      post_time_utc: "23:23"
-      post_start_time_utc: "23:26"
-      post_end_time_utc: "23:27"
+      post_time_utc: "23:24" # UTC
+      post_start_time_utc: "23:26" # UTC
+      post_end_time_utc: "23:27" # UTC
     scraper:
-      holiday_url: https://www.checkiday.com/
+      holiday_url: "https://www.checkiday.com/"
       holiday_limit: 2
     llm:
       concurrency_limit: 5
-      text_model: qwen-3-32b
-      image_model: flux
+      text_model: "qwen-3-32b"
+      image_model: "flux"
       text_prompt:
         "Generate a short, funny, and engaging caption for the holiday:
         '{holiday_name}'."
@@ -45,8 +43,9 @@ parts:
       post_delay_seconds: 1
   jokebot:
     enabled: true
+    default_enabled_on_join: true
     llm:
-      text_model: qwen-3-30b
+      text_model: "qwen-3-30b"
       joke_prompt: "Tell me a hilarious joke up to 2000 symbols"
       joke_prompt_with_topic: "Tell me a joke about {topic} up to 2000 symbols length."
     telegram_settings:
@@ -54,8 +53,52 @@ parts:
       batch_size: 5
       batch_delay_seconds: 2
   imagebot:
-    enabled: true
+    enabled: false
+    default_enabled_on_join: true
     llm:
       image_model: "flux-dev"
-      # image_prompt_template: "cinematic, high-detail photo of: {prompt}"
       image_prompt_template: "{prompt}"
+  newsbot:
+    enabled: true
+    default_enabled_on_join: false
+    scheduler:
+      post_start_time_utc: "07:00" # UTC
+      post_end_time_utc: "19:00" # UTC
+      post_interval_minutes: 15
+    scraper:
+      sources:
+        - name: "CNN World"
+          news_url: "https://edition.cnn.com/world"
+          news_limit: 5
+          # 1. Main article container on the homepage
+          article_selector: 'div[data-component-name="card"]'
+          # 2. The headline text inside the card
+          headline_selector: 'span[data-editable="headline"]'
+          # 3. The link to the full story
+          link_selector: "a"
+          # 4. The paragraphs of text on the article page itself
+          content_selector: "div.article__content p"
+
+        - name: "CNN Politics"
+          news_url: "https://edition.cnn.com/politics"
+          news_limit: 5
+          article_selector: 'div[data-component-name="card"]'
+          headline_selector: 'span[data-editable="headline"]'
+          link_selector: "a"
+          content_selector: "div.article__content p"
+
+        - name: "CNN Science"
+          news_url: "https://edition.cnn.com/science"
+          news_limit: 5
+          article_selector: 'div[data-component-name="card"]'
+          headline_selector: 'span[data-editable="headline"]'
+          link_selector: "a"
+          content_selector: "div.article__content p"
+    llm:
+      text_model: "qwen-3-32b"
+      image_model: "flux-dev"
+      max_content_length: 4000
+      summary_prompt: "You are a neutral news reporter. Based on the following article content, write a concise and unbiased one-paragraph summary. The headline is '{headline}'.\n\nFull Article Content:\n{content}"
+      image_prompt: "A dramatic, high-quality, attention-grabbing news-style photorealistic image related to the headline: '{headline}'"
+    state_management:
+      history_days: 7 # How many days to remember an article to avoid reposting

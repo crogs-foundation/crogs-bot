@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.13.4",
-    "fastapi>=0.116.1",
     "g4f>=0.6.0.1",
     "googletrans>=4.0.2",
     "pytelegrambotapi>=4.28.0",
@@ -15,7 +14,6 @@ dependencies = [
     "requests>=2.32.4",
     "schedule>=1.2.2",
     "taskipy>=1.14.1",
-    "uvicorn[standard]>=0.35.0",
 ]
 
 
