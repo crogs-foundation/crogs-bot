@@ -1,7 +1,9 @@
+# main.py
+
 import argparse
 import asyncio
 import signal
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from functools import partial
 
 from dotenv import load_dotenv
@@ -16,7 +18,7 @@ from src.bot_modules.jokebot import JokeGeneratorModule
 from src.bot_modules.newsbot import NewsBotModule
 from src.config_management import ConfigManager
 from src.logger import Logger
-from src.settings_manager import SettingsManager  # <-- IMPORT
+from src.settings_manager import SettingsManager
 from src.translators.base import Translator
 from src.translators.google_translator import GoogleTranslator
 from src.translators.llm_translator import LLMTranslator
@@ -218,12 +220,8 @@ async def set_bot_commands(bot_param: AsyncTeleBot):
     commands = [
         BotCommand("help", "Show this help message"),
         BotCommand("language", "Change chat language (groups only)"),
-        # BotCommand("settings", "Access admin settings (admins only)"),
-        # BotCommand("postnow", "Force all modules to post now (admins only)"),
-        # BotCommand("posttome", "Force modules to post to you (admins only)"),
     ]
 
-    # Collect commands from all defined module classes
     module_classes = [
         HoliBotModule,
         JokeGeneratorModule,
@@ -231,12 +229,10 @@ async def set_bot_commands(bot_param: AsyncTeleBot):
         NewsBotModule,
     ]
     for module_cls in module_classes:
-        # We don't need to fully initialize the class, just call the static method
         module_commands = module_cls.get_commands(module_cls)
         for cmd_info in module_commands:
             commands.append(BotCommand(cmd_info["command"], cmd_info["description"]))
 
-    # Remove duplicate commands (if any)
     unique_commands = list({cmd.command: cmd for cmd in commands}.values())
 
     await bot_param.set_my_commands(unique_commands)
@@ -244,47 +240,70 @@ async def set_bot_commands(bot_param: AsyncTeleBot):
 
 
 # --- Background tasks & Main execution ---
-async def background_scheduler():
+
+
+# --- MODIFIED: Problem 2 Fix ---
+async def background_scheduler(shutdown_event: asyncio.Event):
+    """
+    More robust scheduler that finds the next absolute event time and sleeps until then.
+    This prevents race conditions where closely scheduled events could be missed.
+    """
     logger.info("Scheduler: Starting background scheduler for modules.")
-    while True:
-        now = datetime.now(timezone.utc)
-        next_sleep_duration_seconds = timedelta(days=2).total_seconds()
-        tasks_to_run = []
+    while not shutdown_event.is_set():
         if not ACTIVE_BOT_MODULES:
-            await asyncio.sleep(60)
+            await asyncio.sleep(5)  # Wait if no modules are active
             continue
+
+        now = datetime.now(timezone.utc)
+        tasks_to_run = []
+
+        # 1. Find all modules whose event time is in the past (i.e., they are due)
         for module in ACTIVE_BOT_MODULES:
             next_event_time = module.next_scheduled_event_time
-            if not next_event_time:
-                continue
-            if now >= next_event_time - timedelta(seconds=2):
+            if next_event_time and now >= next_event_time:
                 tasks_to_run.append(module.process_due_event())
-            else:
-                sleep_for_module = (next_event_time - now).total_seconds()
-                if sleep_for_module > 0:
-                    next_sleep_duration_seconds = min(
-                        next_sleep_duration_seconds, sleep_for_module
-                    )
+
+        # 2. If there are due tasks, execute them concurrently
         if tasks_to_run:
+            logger.info(f"Scheduler: Running {len(tasks_to_run)} due task(s).")
             await asyncio.gather(*tasks_to_run, return_exceptions=True)
-            await asyncio.sleep(1)
-            continue
-        next_sleep_duration_seconds = max(next_sleep_duration_seconds, 5)
-        logger.info(
-            f"Scheduler: Next global check in {next_sleep_duration_seconds:.2f} seconds."
-        )
+            # Give a moment for modules to update their next scheduled time
+            await asyncio.sleep(0.1)
+
+        # 3. Find the absolute closest future event time across all modules
+        next_event_in_future = None
+        for module in ACTIVE_BOT_MODULES:
+            next_event_time = module.next_scheduled_event_time
+            if next_event_time:
+                if not next_event_in_future or next_event_time < next_event_in_future:
+                    next_event_in_future = next_event_time
+
+        # 4. Calculate how long to sleep until that next event
+        sleep_duration_seconds: float
+        if next_event_in_future:
+            sleep_duration_seconds = (
+                next_event_in_future - datetime.now(timezone.utc)
+            ).total_seconds()
+        else:
+            # No upcoming events, check again in a minute
+            sleep_duration_seconds = 60
+
+        # Ensure we don't sleep for a negative duration or too short
+        sleep_duration_seconds = max(1.0, sleep_duration_seconds)
+
+        logger.info(f"Scheduler: Next check in {sleep_duration_seconds:.2f} seconds.")
         try:
-            await asyncio.sleep(next_sleep_duration_seconds)
+            await asyncio.sleep(sleep_duration_seconds)
         except asyncio.CancelledError:
             logger.info("Scheduler task cancelled.")
-            break
-        except Exception as e:
-            logger.error(f"An unexpected error in background_scheduler: {e}")
-            await asyncio.sleep(5)
+            break  # Exit the loop if the task is cancelled
+
     logger.info("Scheduler task has finished.")
 
 
+# --- MODIFIED: Problem 1 Fix ---
 async def polling_loop(shutdown_event: asyncio.Event):
+    """The main polling loop, now aware of the shutdown event."""
     offset, timeout = 0, 10
     while not shutdown_event.is_set():
         try:
@@ -292,9 +311,13 @@ async def polling_loop(shutdown_event: asyncio.Event):
             if updates:
                 offset = updates[-1].update_id + 1
                 await bot.process_new_updates(updates)
+        except asyncio.CancelledError:
+            logger.info("Polling task cancelled.")
+            break  # Exit loop on cancellation
         except Exception as e:
             logger.error(f"Polling error: {e}")
             await asyncio.sleep(5)
+    logger.info("Polling task has finished.")
 
 
 def reload_config_and_modules():
@@ -308,6 +331,7 @@ def reload_config_and_modules():
     logger.info("Config and modules reloaded.")
 
 
+# --- MODIFIED: Problem 1 Fix ---
 async def main():
     await TRANSLATOR.check_api()
     instantiate_bot_modules()
@@ -324,23 +348,32 @@ async def main():
 
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
+
+    # This handler will set the shutdown_event, telling our loops to stop
+    def signal_handler():
+        logger.warning("Shutdown signal received!")
+        shutdown_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown_event.set)
+        loop.add_signal_handler(sig, signal_handler)
 
-    tasks = [
-        background_scheduler(),
-        polling_loop(shutdown_event),
-    ]
+    # Create tasks for our main loops
+    scheduler_task = asyncio.create_task(background_scheduler(shutdown_event))
+    polling_task = asyncio.create_task(polling_loop(shutdown_event))
 
-    try:
-        await asyncio.gather(*tasks)
-    except asyncio.CancelledError:
-        logger.info("Main tasks cancelled.")
-    finally:
-        logger.info("Shutting down...")
+    # Wait for the shutdown signal
+    await shutdown_event.wait()
 
-        await bot.close_session()
-        logger.info("Shutdown complete.")
+    # Gracefully shut down tasks
+    logger.info("Shutting down... cancelling running tasks.")
+    scheduler_task.cancel()
+    polling_task.cancel()
+
+    # Wait for tasks to finish their cancellation
+    await asyncio.gather(scheduler_task, polling_task, return_exceptions=True)
+
+    await bot.close_session()
+    logger.info("Shutdown complete.")
 
 
 if __name__ == "__main__":

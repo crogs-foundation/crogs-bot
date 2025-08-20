@@ -328,14 +328,16 @@ class NewsBotModule(BotModule):
             escaped_headline = html.escape(final_headline)
             escaped_summary = html.escape(final_summary)
 
-            caption = (
-                f"<b>{escaped_headline}</b>\n\n"
-                f"{escaped_summary}\n\n"
-                f"<a href='{article['url']}'>Read More</a>"
-            )
+            caption1 = f"<b>{escaped_headline}</b>\n\n"
+            caption3 = f"<a href='{article['url']}'>Read More</a>"
 
-            if len(caption) > 1000:
-                caption = caption[:997] + "..."
+            max_caption_length = 1000
+            caption2 = escaped_summary
+            caption_sum_length = len(caption2) + len(caption1) + len(caption3) + 2
+            if caption_sum_length > max_caption_length:
+                caption2 = caption2[: max_caption_length - caption_sum_length - 3] + "..."
+
+            caption = f"{caption1}{caption2}\n\n{caption3}"
 
             for chat_id in chat_ids:
                 try:

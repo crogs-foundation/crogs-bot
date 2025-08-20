@@ -115,7 +115,7 @@ class HoliBotModule(BotModule):
         except Exception as e:
             self.logger.error(f"Failed to save state to {self._state_file}: {e}")
 
-    # --- Required API (Unchanged) ---
+    # --- Required API ---
     def register_handlers(self):
         pass
 
@@ -123,60 +123,64 @@ class HoliBotModule(BotModule):
     def has_pending_posts(self) -> bool:
         return not self._generated_content_queue.empty()
 
+    # --- MODIFIED: Fixed logic to prevent skipping the daily generation ---
     @property
     def next_scheduled_event_time(self) -> Optional[datetime]:
         now = datetime.now(timezone.utc)
         scheduler_cfg = self.module_config.get("scheduler", {})
         generation_time_str = scheduler_cfg.get("post_time_utc")
-        next_gen_event, next_post_event = None, None
+
+        next_gen_event: Optional[datetime] = None
+        next_post_event: Optional[datetime] = None
+
         if generation_time_str:
             try:
                 gen_hour, gen_minute = self._parse_hhmm(generation_time_str)
                 today_gen_time = now.replace(
                     hour=gen_hour, minute=gen_minute, second=0, microsecond=0
                 )
-                next_gen_event = (
-                    today_gen_time
-                    if self._last_generation_date != now.date() and now < today_gen_time
-                    else today_gen_time + timedelta(days=1)
-                )
+
+                # Correct logic: if we haven't run today, the event is today's time.
+                # If we have run today, the event is tomorrow's time.
+                if self._last_generation_date != now.date():
+                    next_gen_event = today_gen_time
+                else:
+                    next_gen_event = today_gen_time + timedelta(days=1)
+
             except (ValueError, KeyError) as e:
                 self.logger.error(f"Invalid 'post_time_utc' for generation: {e}")
+
         if self.has_pending_posts:
+            # Safely peek at the next item in the queue
             next_post_event = self._generated_content_queue._queue[0][3]  # type: ignore
+
+        # Return the soonest of the two possible events
         if next_gen_event and next_post_event:
             return min(next_gen_event, next_post_event)
         return next_gen_event or next_post_event
 
+    # --- MODIFIED: Simplified logic to trust the main scheduler ---
     async def process_due_event(self):
         now = datetime.now(timezone.utc)
-        scheduler_cfg = self.module_config.get("scheduler", {})
-        generation_time_str = scheduler_cfg.get("post_time_utc")
-        is_generation_due = False
-        if generation_time_str:
-            try:
-                gen_hour, gen_minute = self._parse_hhmm(generation_time_str)
-                today_gen_time = now.replace(
-                    hour=gen_hour, minute=gen_minute, second=0, microsecond=0
-                )
-                if (
-                    self._last_generation_date != now.date()
-                    and now >= today_gen_time - timedelta(seconds=2)
-                ):
-                    is_generation_due = True
-            except (ValueError, KeyError):
-                pass
-        is_post_due = False
+        today = now.date()
+
+        # Check if a post is due first
         if self.has_pending_posts:
             next_post_time = self._generated_content_queue._queue[0][3]  # type: ignore
-            if now >= next_post_time - timedelta(seconds=2):
-                is_post_due = True
-        if is_generation_due:
+            if now >= next_post_time:
+                self.logger.info("A scheduled post is due. Posting now.")
+                await self._do_post_next_item()
+                return
+
+        # If no post was due, the event must be for content generation
+        if self._last_generation_date != today:
+            self.logger.info("Scheduled generation time reached.")
             await self._do_generate_and_queue_content()
-        elif is_post_due:
-            await self._do_post_next_item()
         else:
-            self.logger.debug("process_due_event called, but no action is due.")
+            self.logger.debug(
+                "process_due_event called, but no action taken. "
+                "Posts are not due and generation is complete for today."
+            )
 
     async def run_scheduled_job(self, target_chat_ids: Optional[list[int]] = None):
         self.logger.info(f"Manual trigger for chat_ids: {target_chat_ids}.")
@@ -231,7 +235,6 @@ class HoliBotModule(BotModule):
             self.logger.error(f"Error fetching holidays: {e}")
             return []
 
-    # --- MODIFIED: Now just returns the raw creative text from the LLM ---
     async def _generate_caption(self, holiday_name: str) -> str:
         llm_cfg = self.module_config.get("llm", {})
         prompt_template = llm_cfg.get(
@@ -262,7 +265,6 @@ class HoliBotModule(BotModule):
             self.logger.error(f"Error generating image for {holiday_name}: {e}")
             return None
 
-    # (Other generation methods are largely unchanged)
     async def _generate_holiday_content(self, holiday_name: str, semaphore):
         async with semaphore:
             self.logger.debug(f"Generating content for '{holiday_name}'...")
@@ -336,18 +338,20 @@ class HoliBotModule(BotModule):
         await self._save_state_to_disk()
         return True
 
-    # --- REWRITTEN: This method now safely handles Markdown formatting ---
     async def _do_post_next_item(
         self, target_chat_ids: Optional[list[int]] = None, force_post_now=False
     ):
         if not self.has_pending_posts:
             return False
 
-        holiday_name, llm_caption, image_url, _ = (
-            await self._generated_content_queue.get()
-            if force_post_now
-            else self._generated_content_queue.get_nowait()
-        )
+        try:
+            holiday_name, llm_caption, image_url, _ = (
+                await self._generated_content_queue.get()
+                if force_post_now
+                else await self._generated_content_queue.get()  # Always wait if we decided to post
+            )
+        except asyncio.QueueEmpty:
+            return False
 
         all_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
         post_to_chats = [cid for cid in all_chats if self.is_enabled_for_chat(cid)]
@@ -362,7 +366,6 @@ class HoliBotModule(BotModule):
         if not post_to_chats:
             return True
 
-        # Group chats by language for efficient translation
         lang_to_chats = defaultdict(list)
         for chat_id in post_to_chats:
             lang = (
@@ -375,16 +378,13 @@ class HoliBotModule(BotModule):
         header_text_en = f"Happy {holiday_name}!"
 
         for lang, chat_ids in lang_to_chats.items():
-            # Translate header and caption in a single batch call
             translated_header, translated_caption = await self.translator.translate_batch(
                 [header_text_en, llm_caption], lang
             )
 
-            # Escape the translated parts to make them safe for HTML
             escaped_header = html.escape(translated_header)
             escaped_caption = html.escape(translated_caption)
 
-            # Construct the final caption with our desired formatting
             final_caption = f"<b>{escaped_header}</b>\n\n{escaped_caption}"
 
             telegram_cfg = self.module_config.get("telegram_settings", {})
