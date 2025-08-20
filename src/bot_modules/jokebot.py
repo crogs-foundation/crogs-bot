@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
@@ -129,6 +129,15 @@ class JokeGeneratorModule(BotModule):
             self.logger.error(
                 f"Telegram API Error sending to {target_message.chat.id}: {e}"
             )
+
+    def get_commands(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "command": "joke",
+                "description": "Tells a joke. You can specify a topic (e.g., /joke cats).",
+                "admin_only": False,
+            }
+        ]
 
     # ----- Abstract Methods -----
 

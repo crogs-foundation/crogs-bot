@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from telebot.apihelper import ApiTelegramException
 from telebot.types import Message
@@ -155,6 +155,15 @@ class ImageGeneratorModule(BotModule):
             self.logger.error(
                 f"Telegram API Error sending photo to {target_chat_id}: {e}"
             )
+
+    def get_commands(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "command": "img",
+                "description": "Generates an image from a text description (e.g., /img a cat in space).",
+                "admin_only": False,
+            }
+        ]
 
     # ----- Abstract Methods -----
 

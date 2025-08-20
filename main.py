@@ -7,7 +7,7 @@ from functools import partial
 from dotenv import load_dotenv
 from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
-from telebot.types import ChatMemberUpdated
+from telebot.types import BotCommand, ChatMemberUpdated, Message
 
 from src.bot_modules.base import BotModule
 from src.bot_modules.holibot import HoliBotModule
@@ -119,10 +119,49 @@ async def trigger_modules(target_chat_ids=None) -> bool:
 
 # --- Bot Handlers---
 @bot.message_handler(commands=["start", "help"])
-async def handle_start(message):
-    await bot.reply_to(
-        message, "Hello! I am a modular bot. Admins can use /settings to configure me."
-    )
+async def handle_start(message: Message):
+    if message.from_user is None:
+        return
+    user_is_admin = str(message.from_user.id) in [
+        str(aid) for aid in CONFIG_MANAGER.extract("telegram.admin_ids", [])
+    ]
+
+    # --- Build the Help String ---
+    help_text = "Hello! I am a modular bot. Here are the commands you can use:\n\n"
+
+    # 1. Global Commands
+    help_text += "*Everyone*\n"
+    help_text += "/help - Shows this help message.\n"
+    if message.chat.type != "private":
+        help_text += "/language - Change the language for this chat.\n"
+
+    # 2. Module-Specific Commands
+    for module in ACTIVE_BOT_MODULES:
+        if is_module_enabled_for_chat_helper(message.chat.id, module.name):
+            commands = module.get_commands()
+            for cmd_info in commands:
+                if not cmd_info.get("admin_only"):
+                    help_text += f"/{cmd_info['command']} - {cmd_info['description']}\n"
+
+    # 3. Admin-Only Commands
+    if user_is_admin:
+        help_text += "\n*Admins Only*\n"
+        help_text += "/settings - Open the settings panel.\n"
+        # help_text += (
+        #     "/postnow - Manually trigger all active modules to post in their channels.\n"
+        # )
+        # help_text += "/posttome - Trigger modules to post only in this chat.\n"
+        # Add admin commands from modules
+        for module in ACTIVE_BOT_MODULES:
+            if is_module_enabled_for_chat_helper(message.chat.id, module.name):
+                commands = module.get_commands()
+                for cmd_info in commands:
+                    if cmd_info.get("admin_only"):
+                        help_text += (
+                            f"/{cmd_info['command']} - {cmd_info['description']}\n"
+                        )
+
+    await bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
 
 
 @bot.message_handler(commands=["postnow"])
@@ -169,6 +208,39 @@ async def handle_chat_update(message: ChatMemberUpdated):
         CONFIG_MANAGER.config.get("chat_module_settings", {}).pop(str(chat_id), None)
         CONFIG_MANAGER.save_config_file()
         logger.info(f"Bot removed from group: {chat_id}. Cleared its specific settings.")
+
+
+async def set_bot_commands(bot_param: AsyncTeleBot):
+    """
+    Collects all possible commands from modules and global scope
+    and registers them with BotFather.
+    """
+    commands = [
+        BotCommand("help", "Show this help message"),
+        BotCommand("language", "Change chat language (groups only)"),
+        # BotCommand("settings", "Access admin settings (admins only)"),
+        # BotCommand("postnow", "Force all modules to post now (admins only)"),
+        # BotCommand("posttome", "Force modules to post to you (admins only)"),
+    ]
+
+    # Collect commands from all defined module classes
+    module_classes = [
+        HoliBotModule,
+        JokeGeneratorModule,
+        ImageGeneratorModule,
+        NewsBotModule,
+    ]
+    for module_cls in module_classes:
+        # We don't need to fully initialize the class, just call the static method
+        module_commands = module_cls.get_commands(module_cls)
+        for cmd_info in module_commands:
+            commands.append(BotCommand(cmd_info["command"], cmd_info["description"]))
+
+    # Remove duplicate commands (if any)
+    unique_commands = list({cmd.command: cmd for cmd in commands}.values())
+
+    await bot_param.set_my_commands(unique_commands)
+    logger.info(f"Successfully registered {len(unique_commands)} commands with Telegram.")
 
 
 # --- Background tasks & Main execution ---
@@ -248,6 +320,7 @@ async def main():
         reload_callback=reload_config_and_modules,
     )
     settings_manager.register_handlers()
+    await set_bot_commands(bot)
 
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()

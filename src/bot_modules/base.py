@@ -3,7 +3,7 @@ import os
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
@@ -120,6 +120,13 @@ class BotModule(ABC):
             caption=self._sign_response(caption) if caption else None,
             **kwargs,
         )
+
+    def get_commands(self) -> list[dict[str, Any]]:
+        """
+        Returns a list of commands provided by this module.
+        Each command is a dict: {'command': 'name', 'description': 'desc', 'admin_only': False}
+        """
+        return []
 
     # ----- Abstract API -----
     @abstractmethod

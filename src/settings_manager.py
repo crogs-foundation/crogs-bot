@@ -1,3 +1,5 @@
+# src/settings_manager.py
+
 from typing import Callable, Optional
 
 from telebot.async_telebot import AsyncTeleBot
@@ -10,6 +12,9 @@ from telebot.types import (
 )
 
 from src.logger import Logger
+
+# --- Configuration for what top-level keys are editable in "Global Settings" ---
+EDITABLE_GLOBAL_SECTIONS = ["translation", "llm_settings"]
 
 
 class SettingsManager:
@@ -40,38 +45,39 @@ class SettingsManager:
         self.bot.register_message_handler(
             self._handle_language_command, commands=["language"]
         )
-
         self.bot.register_callback_query_handler(
             self._handle_callback_query,
             func=lambda call: call.data.startswith(("settings_", "lang_")),
         )
-
         self.bot.register_message_handler(
             self._handle_pending_input, content_types=["text"]
         )
-
         self.logger.info("Settings handlers registered.")
 
     async def _handle_pending_input(self, message: Message):
         """A generic message handler that checks if we are waiting for input from a user."""
-        if message.from_user is None:
+        if message.from_user is None or not message.text:
             return
         user_key = (message.chat.id, message.from_user.id)
 
-        if message.text == "/cancel" and user_key in self._pending_param_inputs:
-            self._pending_param_inputs.pop(user_key)
+        # --- NEW: Handle /cancel command during input ---
+        if message.text.lower() == "/cancel" and user_key in self._pending_param_inputs:
+            context = self._pending_param_inputs.pop(user_key)
             await self.bot.send_message(message.chat.id, "Operation cancelled.")
-            context = self._pending_param_inputs.pop(user_key, None)
-            if context:
+
+            # Restore the previous menu
+            if context.get("section") == "parts":
                 new_text, new_markup = await self._generate_module_params_menu(
-                    context["module_name"]
+                    context["key_path"].split(".")[0]
                 )
-                await self.bot.send_message(
-                    message.chat.id,
-                    new_text,
-                    reply_markup=new_markup,
-                    parse_mode="Markdown",
+            else:
+                new_text, new_markup = await self._generate_global_params_menu(
+                    context["section"]
                 )
+
+            await self.bot.send_message(
+                message.chat.id, new_text, reply_markup=new_markup, parse_mode="Markdown"
+            )
             return
 
         if user_key in self._pending_param_inputs:
@@ -103,9 +109,8 @@ class SettingsManager:
         )
         await self.bot.send_message(message.chat.id, text, reply_markup=markup)
 
-    # --- Main Callback Router ---
     async def _handle_callback_query(self, call: CallbackQuery):
-        if call.data is None or call.data.startswith("lang_set"):
+        if call.data and call.data.startswith("lang_set"):
             await self._process_public_language_set(call)
             return
 
@@ -124,9 +129,8 @@ class SettingsManager:
                 call.id, "An error occurred or the menu is unchanged."
             )
 
-    # --- Callback Processors ---
     async def _process_public_language_set(self, call: CallbackQuery):
-        if call.data is None:
+        if not call.data:
             return
         parts = call.data.split(":")
         target_chat_id, lang_code = int(parts[1]), parts[2]
@@ -137,13 +141,11 @@ class SettingsManager:
             return
         self._get_or_create_chat_settings(target_chat_id)["language"] = lang_code
         self.save_config(self.config)
-        await self.bot.answer_callback_query(
-            call.id, f"Language for this chat set to {lang_code}."
-        )
+        await self.bot.answer_callback_query(call.id, f"Language set to {lang_code}.")
         await self.bot.delete_message(call.message.chat.id, call.message.message_id)
 
     async def _process_admin_callback(self, call: CallbackQuery):
-        if call.data is None:
+        if not call.data:
             return
         parts = call.data.split(":")
         action = parts[0]
@@ -154,12 +156,10 @@ class SettingsManager:
         if action == "settings_main":
             new_markup = await self._generate_main_menu(call.message.chat.id, is_private)
         elif action == "settings_select_chat":
-            page = int(parts[1])
-            new_text, new_markup = await self._generate_chat_selection_menu(page)
+            new_text, new_markup = await self._generate_chat_selection_menu(int(parts[1]))
         elif action == "settings_show_chat":
-            target_chat_id = int(parts[1])
             new_text, new_markup = await self._generate_chat_config_menu(
-                target_chat_id, from_pm=is_private
+                int(parts[1]), from_pm=is_private
             )
         elif action == "settings_toggle_module":
             target_chat_id, module_name = int(parts[1]), parts[2]
@@ -176,9 +176,8 @@ class SettingsManager:
                 target_chat_id, from_pm=is_private
             )
         elif action == "settings_select_lang":
-            target_chat_id = int(parts[1])
             new_text, new_markup = await self._generate_language_menu(
-                target_chat_id, from_admin_menu=True
+                int(parts[1]), from_admin_menu=True
             )
         elif action == "settings_set_lang":
             target_chat_id, lang_code = int(parts[1]), parts[2]
@@ -190,42 +189,39 @@ class SettingsManager:
             )
         elif action == "settings_global":
             new_text, new_markup = await self._generate_global_settings_menu()
-        elif action == "settings_select_translation_strategy":
-            new_text, new_markup = await self._generate_translation_strategy_menu()
-        elif action == "settings_set_translation_strategy":
-            strategy = parts[1]
-            self.config["translation"]["strategy"] = strategy
-            self.save_config(self.config)
-            await self.bot.answer_callback_query(
-                call.id, f"Translation strategy set to '{strategy}'."
-            )
-            new_text, new_markup = await self._generate_global_settings_menu()
         elif action == "settings_module_menu":
             new_text, new_markup = await self._generate_module_selection_menu()
         elif action == "settings_module_params":
-            module_name, page = parts[1], int(parts[2])
             new_text, new_markup = await self._generate_module_params_menu(
-                module_name, page
+                parts[1], int(parts[2])
             )
         elif action == "settings_module_edit_idx":
             _, module_name, index_str = parts
-            index = int(index_str)
-            params_dict = self.config.get("parts", {}).get(module_name, {})
-            flat_params = self._flatten_dict(params_dict)
-            if index < len(flat_params):
-                key_path, _ = flat_params[index]
-                await self._prompt_for_new_param_value(call, module_name, key_path)
-            else:
-                await self.bot.answer_callback_query(
-                    call.id, "Error: Stale config, please go back.", show_alert=True
-                )
+            params = self._flatten_dict(self.config.get("parts", {}).get(module_name, {}))
+            key_path, _ = params[int(index_str)]
+            full_key_path = f"parts.{module_name}.{key_path}"
+            await self._prompt_for_new_param_value(call, "parts", full_key_path)
             return
         elif action == "settings_reload":
             await self.bot.answer_callback_query(
-                call.id, "Configuration reloaded from disk.", show_alert=True
+                call.id, "Configuration reloaded.", show_alert=True
             )
             self.reload_config_and_modules()
             new_markup = await self._generate_main_menu(call.message.chat.id, is_private)
+        # --- NEW: Dynamic Global Settings Handlers ---
+        elif action == "settings_global_section":
+            new_text, new_markup = await self._generate_global_params_menu(parts[1])
+        elif action == "settings_global_params":
+            new_text, new_markup = await self._generate_global_params_menu(
+                parts[1], int(parts[2])
+            )
+        elif action == "settings_global_edit_idx":
+            _, section, index_str = parts
+            params = self._flatten_dict(self.config.get(section, {}))
+            key_path, _ = params[int(index_str)]
+            full_key_path = f"{section}.{key_path}"
+            await self._prompt_for_new_param_value(call, section, full_key_path)
+            return
 
         # Update the message if content has changed
         old_markup_json = (
@@ -245,13 +241,12 @@ class SettingsManager:
             await self.bot.answer_callback_query(call.id)
 
     async def _prompt_for_new_param_value(
-        self, call: CallbackQuery, module_name: str, key_path: str
+        self, call: CallbackQuery, section: str, full_key_path: str
     ):
         prompt_text = (
-            f"Current value for `{key_path}` is:\n"
-            f"`{self._get_nested_key(self.config, f'parts.{module_name}.{key_path}')}`\n\n"
-            "Please send the new value.\n"
-            "Send `/cancel` to abort."
+            f"Editing parameter:\n`{full_key_path}`\n\n"
+            f"Current value:\n`{self._get_nested_key(self.config, full_key_path)}`\n\n"
+            "Please send the new value, or send `/cancel` to abort."
         )
         await self.bot.edit_message_text(
             prompt_text,
@@ -260,25 +255,27 @@ class SettingsManager:
             reply_markup=None,
             parse_mode="Markdown",
         )
+
         user_key = (call.message.chat.id, call.from_user.id)
         self._pending_param_inputs[user_key] = {
-            "module_name": module_name,
-            "key_path": key_path,
+            "section": section,
+            "key_path": full_key_path,
         }
         await self.bot.answer_callback_query(call.id)
 
     async def _process_new_param_value(
-        self, message: Message, module_name: str, key_path: str
+        self, message: Message, section: str, key_path: str
     ):
-        new_value_str = message.text
-        if new_value_str is None:
+        if not message.text:
             return
-        new_value = None
-        if new_value_str.lower() in ["true", "false"]:
-            new_value = new_value_str.lower() == "true"
-        elif len(new_value_str) > 8:  # Heuristic to skip big numerics
-            new_value = new_value_str
+        new_value_str = message.text
 
+        # Improved type conversion
+        new_value: object
+        if new_value_str.lower() == "true":
+            new_value = True
+        elif new_value_str.lower() == "false":
+            new_value = False
         elif new_value_str.isdigit():
             new_value = int(new_value_str)
         else:
@@ -287,13 +284,19 @@ class SettingsManager:
             except ValueError:
                 new_value = new_value_str
 
-        self._set_nested_key(self.config, f"parts.{module_name}.{key_path}", new_value)
+        self._set_nested_key(self.config, key_path, new_value)
         self.save_config(self.config)
         await self.bot.send_message(
-            message.chat.id, f"✅ Successfully set `{key_path}` to `{new_value}`."
+            message.chat.id, f"✅ Set `{key_path}` to `{new_value}`."
         )
         self.reload_config_and_modules()
-        new_text, new_markup = await self._generate_module_params_menu(module_name)
+
+        # Restore the correct menu
+        if section == "parts":
+            module_name = key_path.split(".")[1]
+            new_text, new_markup = await self._generate_module_params_menu(module_name)
+        else:
+            new_text, new_markup = await self._generate_global_params_menu(section)
         await self.bot.send_message(
             message.chat.id, new_text, reply_markup=new_markup, parse_mode="Markdown"
         )
@@ -324,7 +327,7 @@ class SettingsManager:
     async def _generate_chat_selection_menu(self, page=0):
         markup = InlineKeyboardMarkup(row_width=1)
         chat_ids = self.config["telegram"].get("chat_ids", [])
-        _items_per_page, start, end = 5, page * 5, (page + 1) * 5
+        start, end = page * 5, (page + 1) * 5
         buttons = []
         for chat_id in chat_ids[start:end]:
             try:
@@ -405,35 +408,65 @@ class SettingsManager:
             )
         return "Select a language:", markup
 
+    # --- MODIFIED: Global settings menu is now dynamic ---
     async def _generate_global_settings_menu(self):
         markup = InlineKeyboardMarkup(row_width=1)
-        strategy = self.config.get("translation", {}).get("strategy", "N/A")
+        buttons = [
+            InlineKeyboardButton(
+                f"🔧 {section.replace('_', ' ').capitalize()}",
+                callback_data=f"settings_global_section:{section}",
+            )
+            for section in EDITABLE_GLOBAL_SECTIONS
+        ]
+        markup.add(*buttons)
         markup.add(
             InlineKeyboardButton(
-                f"Translation Strategy: {strategy.capitalize()}",
-                callback_data="settings_select_translation_strategy",
-            ),
-            InlineKeyboardButton(
-                "🔧 Configure Modules", callback_data="settings_module_menu"
-            ),
+                "⚙️ Configure Modules", callback_data="settings_module_menu"
+            )
         )
         markup.add(InlineKeyboardButton("🔙 Main Menu", callback_data="settings_main"))
         return "Global Bot Settings:", markup
 
-    async def _generate_translation_strategy_menu(self):
+    # --- NEW: Menu for browsing a specific global section's parameters ---
+    async def _generate_global_params_menu(self, section_name, page=0):
         markup = InlineKeyboardMarkup(row_width=1)
-        strategies = ["prompt", "response"]
-        current = self.config.get("translation", {}).get("strategy")
-        buttons = [
-            InlineKeyboardButton(
-                f"{'>> ' if s == current else ''}{s.capitalize()}",
-                callback_data=f"settings_set_translation_strategy:{s}",
-            )
-            for s in strategies
-        ]
+        params_dict = self.config.get(section_name, {})
+        flat_params = self._flatten_dict(params_dict)
+        start, end = page * 5, (page + 1) * 5
+        buttons = []
+        for i, (key, value) in enumerate(flat_params):
+            if start <= i < end:
+                display_value = str(value).replace("\n", " ")
+                if len(display_value) > 30:
+                    display_value = display_value[:27] + "..."
+                buttons.append(
+                    InlineKeyboardButton(
+                        f"{key}: {display_value}",
+                        callback_data=f"settings_global_edit_idx:{section_name}:{i}",
+                    )
+                )
         markup.add(*buttons)
-        markup.add(InlineKeyboardButton("🔙 Back", callback_data="settings_global"))
-        return "Select translation strategy:", markup
+        nav = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    "<<",
+                    callback_data=f"settings_global_params:{section_name}:{page - 1}",
+                )
+            )
+        if end < len(flat_params):
+            nav.append(
+                InlineKeyboardButton(
+                    ">>",
+                    callback_data=f"settings_global_params:{section_name}:{page + 1}",
+                )
+            )
+        if nav:
+            markup.row(*nav)
+        markup.add(
+            InlineKeyboardButton("🔙 Global Settings", callback_data="settings_global")
+        )
+        return f"Parameters for *{section_name.replace('_', ' ').capitalize()}*:", markup
 
     async def _generate_module_selection_menu(self):
         markup = InlineKeyboardMarkup(row_width=1)
@@ -444,34 +477,29 @@ class SettingsManager:
             for name in self.config.get("parts", {})
         ]
         markup.add(*buttons)
-        markup.add(InlineKeyboardButton("🔙 Back", callback_data="settings_global"))
+        markup.add(
+            InlineKeyboardButton("🔙 Global Settings", callback_data="settings_global")
+        )
         return "Select a module to configure:", markup
 
     async def _generate_module_params_menu(self, module_name, page=0):
         markup = InlineKeyboardMarkup(row_width=1)
         params_dict = self.config.get("parts", {}).get(module_name, {})
         flat_params = self._flatten_dict(params_dict)
-
-        _items_per_page, start, end = 5, page * 5, (page + 1) * 5
+        start, end = page * 5, (page + 1) * 5
         buttons = []
-        # Enumerate the full list to get an absolute index for each param
         for i, (key, value) in enumerate(flat_params):
-            if start <= i < end:  # Only display items for the current page
-                # Use the absolute index 'i' in the callback data
-                callback_data = f"settings_module_edit_idx:{module_name}:{i}"
-
-                # Truncate long values for display purposes
+            if start <= i < end:
                 display_value = str(value).replace("\n", " ")
                 if len(display_value) > 30:
                     display_value = display_value[:27] + "..."
-
                 buttons.append(
                     InlineKeyboardButton(
-                        f"{key}: {display_value}", callback_data=callback_data
+                        f"{key}: {display_value}",
+                        callback_data=f"settings_module_edit_idx:{module_name}:{i}",
                     )
                 )
         markup.add(*buttons)
-
         nav = []
         if page > 0:
             nav.append(
@@ -487,7 +515,6 @@ class SettingsManager:
             )
         if nav:
             markup.row(*nav)
-
         markup.add(
             InlineKeyboardButton("🔙 Module List", callback_data="settings_module_menu")
         )
@@ -495,9 +522,11 @@ class SettingsManager:
 
     # --- Helper Methods ---
     def _is_admin(self, user: Optional[User]):
-        return user is not None and str(user.id) in self.config.get("telegram", {}).get(
-            "admin_ids", []
-        )
+        # --- IMPROVED: Handles None user and compares strings to strings ---
+        return user is not None and str(user.id) in [
+            str(admin_id)
+            for admin_id in self.config.get("telegram", {}).get("admin_ids", [])
+        ]
 
     def _get_or_create_chat_settings(self, chat_id):
         chat_id_str = str(chat_id)
