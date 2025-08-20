@@ -38,6 +38,11 @@ class ImageGeneratorModule(BotModule):
             is_module_enabled_for_chat_callback,
             dev,
         )
+
+        self._image_placeholder = module_config.get("llm", {}).get(
+            "image_placeholder", ""
+        )
+
         self.logger.info(f"ImageGeneratorModule '{self.name}' initialized.")
 
     async def _handle_image_request(
@@ -131,7 +136,7 @@ class ImageGeneratorModule(BotModule):
                 return (image_url, caption)
             self.logger.error(f"Image generation returned invalid URL: {image_url}")
             return (
-                "https://upload.wikimedia.org/wikipedia/en/thumb/f/f3/Flag_of_Russia.svg/1200px-Flag_of_Russia.svg.png?20120812153731",
+                self._image_placeholder,
                 caption,
             )
         except Exception as e:

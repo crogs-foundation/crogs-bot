@@ -86,9 +86,10 @@ class BotModule(ABC):
     ):
         response = await self._translate_response(response, utility, target_lang)
 
-        await self.bot.reply_to(
-            message, self._sign_response(response), parse_mode="Markdown", **kwargs
-        )
+        if "parse_mode" not in kwargs:
+            kwargs["parse_mode"] = "Markdown"
+
+        await self.bot.reply_to(message, self._sign_response(response), **kwargs)
 
     async def sign_send_message(
         self,
@@ -100,9 +101,9 @@ class BotModule(ABC):
     ):
         response = await self._translate_response(response, utility, target_lang)
 
-        await self.bot.send_message(
-            chat_id, self._sign_response(response), parse_mode="Markdown", **kwargs
-        )
+        if "parse_mode" not in kwargs:
+            kwargs["parse_mode"] = "Markdown"
+        await self.bot.send_message(chat_id, self._sign_response(response), **kwargs)
 
     async def sign_send_photo(
         self,
@@ -111,11 +112,12 @@ class BotModule(ABC):
         caption: Optional[str] = None,
         **kwargs,
     ):
+        if "parse_mode" not in kwargs:
+            kwargs["parse_mode"] = "Markdown"
         await self.bot.send_photo(
             chat_id,
             image_url,
             caption=self._sign_response(caption) if caption else None,
-            parse_mode="Markdown",
             **kwargs,
         )
 

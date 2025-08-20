@@ -1,45 +1,41 @@
 telegram:
   admin_ids:
-    - "424826379"
+  - '424826379'
   chat_ids:
-    - "-1002777148413"
-    - "-4883974576"
+  - '-1002777148413'
+  - '-4883974576'
 translation:
-  provider: "llm" # "google" or "llm"
-  strategy: "prompt"
+  provider: llm
+  strategy: prompt
   translate_utility: false
-
   llm_translator_settings:
-    # Model to use for translation tasks.
-    model: "qwen-3-14b"
-    # The prompt template for the LLM.
-    prompt_template: "Translate the following text below to {target_lang}.
-      Return only the translated text, without any additional comments or explanations. Text:
-      \n\n---\n\n
-      {text}"
-
+    model: qwen-3-30b
+    prompt_template: "Translate the text below to {target_lang}. Try to translate\
+      \ the original humor or wordplay - don't go after the literal translation. Return\
+      \ only the translated text, without any additional comments or explanations.\
+      \ Text: \n\n---\n\n {text}"
 llm_settings:
-  base_text_model: "qwen-3-32b"
-  base_image_model: "flux-dev"
-
+  base_text_model: qwen-3-32b
+  base_image_model: flux
 chat_module_settings:
-  "-1002777148413":
+  '-1002777148413':
     jokebot: false
     language: zh-cn
     holibot: true
-  "-4883974576":
+    newsbot: true
+    imagebot: false
+  '-4883974576':
     holibot: true
     newsbot: true
     language: ru
-
 parts:
   holibot:
     enabled: true
     default_enabled_on_join: false
     scheduler:
-      post_time_utc: "23:24"
-      post_start_time_utc: "23:26"
-      post_end_time_utc: "23:27"
+      post_time_utc: '23:24'
+      post_start_time_utc: '23:26'
+      post_end_time_utc: '23:27'
     scraper:
       holiday_url: https://www.checkiday.com/
       holiday_limit: 0
@@ -47,10 +43,11 @@ parts:
       concurrency_limit: 5
       text_model: qwen-3-32b
       image_model: flux
-      text_prompt:
-        "Generate a short, funny, and engaging caption for the holiday:
-        '{holiday_name}'."
-      image_prompt: "A humorous, creative image for the holiday: '{holiday_name}'."
+      text_prompt: 'Generate a short, funny, and engaging caption for the holiday:
+        ''{holiday_name}''. Return only the translated text, without any additional
+        comments or explanations.'
+      image_prompt: 'A humorous, creative and crazy image for the holiday: ''{holiday_name}''.'
+      image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
     telegram_settings:
       caption_character_limit: 1000
       post_delay_seconds: 1
@@ -59,62 +56,61 @@ parts:
     default_enabled_on_join: true
     llm:
       text_model: qwen-3-32b
-      joke_prompt: "Tell me a hilarious joke up to 2000 symbols.
-        Return only the final joke, without any additional comments or explanations"
-      joke_prompt_with_topic:
-        "Tell me a hilarious joke about {topic} up to 2000 symbols.
-        Return only the final joke, without any additional comments or explanations"
+      joke_prompt: Tell me a hilarious joke up to 2000 symbols. Return only the final
+        joke, without any additional comments or explanations
+      joke_prompt_with_topic: Tell me a hilarious joke about {topic} up to 2000 symbols.
+        Return only the final joke, without any additional comments or explanations
   imagebot:
     enabled: true
     default_enabled_on_join: true
     llm:
-      image_model: "midjourney"
-      image_prompt_template: "{prompt}"
+      image_model: midjourney
+      image_prompt_template: '{prompt}'
+      image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
   newsbot:
-    enabled: false
+    enabled: true
     default_enabled_on_join: false
     scheduler:
       post_start_time_utc: 07:00
-      post_end_time_utc: "19:00"
+      post_end_time_utc: '19:00'
       post_interval_minutes: 15
     scraper:
       sources:
-        - name: CNN World
-          news_url: https://edition.cnn.com/world
-          news_limit: 5
-          article_selector: div[data-component-name="card"]
-          headline_selector: span[data-editable="headline"]
-          link_selector: a
-          content_selector: div.article__content p
-        - name: CNN Politics
-          news_url: https://edition.cnn.com/politics
-          news_limit: 5
-          article_selector: div[data-component-name="card"]
-          headline_selector: span[data-editable="headline"]
-          link_selector: a
-          content_selector: div.article__content p
-        - name: CNN Science
-          news_url: https://edition.cnn.com/science
-          news_limit: 5
-          article_selector: div[data-component-name="card"]
-          headline_selector: span[data-editable="headline"]
-          link_selector: a
-          content_selector: div.article__content p
+      - name: CNN World
+        news_url: https://edition.cnn.com/world
+        news_limit: 5
+        article_selector: div[data-component-name="card"]
+        headline_selector: span[data-editable="headline"]
+        link_selector: a
+        content_selector: div.article__content p
+      - name: CNN Politics
+        news_url: https://edition.cnn.com/politics
+        news_limit: 5
+        article_selector: div[data-component-name="card"]
+        headline_selector: span[data-editable="headline"]
+        link_selector: a
+        content_selector: div.article__content p
+      - name: CNN Science
+        news_url: https://edition.cnn.com/science
+        news_limit: 5
+        article_selector: div[data-component-name="card"]
+        headline_selector: span[data-editable="headline"]
+        link_selector: a
+        content_selector: div.article__content p
     llm:
       text_model: qwen-3-32b
-      image_model: flux-dev
+      image_model: flux
       max_content_length: 4000
-      summary_prompt:
-        "You are a neutral news reporter. Based on the following article
-        content, write a concise and unbiased one-paragraph summary. The headline
-        is '{headline}'.
-
+      summary_prompt: 'You are a news reporter. Based on the following article content,
+        write a concise and brief one-paragraph summary (not more than 500 symbols).
+        Return only the summary text, without any additional comments or explanations
+        The headline is ''{headline}''.
 
         Full Article Content:
 
-        {content}"
-      image_prompt:
-        "A dramatic, high-quality, attention-grabbing news-style photorealistic
-        image related to the headline: '{headline}'"
+        {content}'
+      image_prompt: 'A dramatic, high-quality, attention-grabbing news-style photorealistic
+        image related to the headline: ''{headline}'''
+      image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
     state_management:
       history_days: 7
