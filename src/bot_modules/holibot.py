@@ -11,14 +11,10 @@ from bs4 import BeautifulSoup
 from telebot.apihelper import ApiTelegramException
 
 from src.bot_modules.base import BotModule
+from src.config_management import ConfigManager
+from src.llm import generate_image, generate_text
 
 STATE_FILE = "holibot_state.json"
-
-
-def get_language_for_chat(chat_id: int, global_config: dict) -> str:
-    """Gets the configured language for a chat, defaulting to 'en'."""
-    chat_settings = global_config.get("chat_module_settings", {}).get(str(chat_id), {})
-    return chat_settings.get("language", "en")
 
 
 class HoliBotModule(BotModule):
@@ -36,6 +32,7 @@ class HoliBotModule(BotModule):
         global_config,
         logger,
         is_module_enabled_for_chat_callback: Callable[[int], bool],
+        dev,
     ):
         super().__init__(
             name,
@@ -46,22 +43,24 @@ class HoliBotModule(BotModule):
             global_config,
             logger,
             is_module_enabled_for_chat_callback,
+            dev,
         )
         self.logger.info(f"HoliBotModule '{self.name}' initialized.")
         self._generated_content_queue: asyncio.Queue = asyncio.Queue()
         self._last_generation_date: Optional[date] = None
         self._todays_posts: List[dict] = []
+        self._state_file = self.state_folder / STATE_FILE
         self._load_state_from_disk()
         self.logger.info(
             f"HoliBot state loaded. Last generation date: {self._last_generation_date}. "
             f"Pending posts in queue: {self._generated_content_queue.qsize()}."
         )
 
-    # ----- State Management on Disk (MODIFIED) -----
+    # ----- State Management on Disk -----
 
     def _load_state_from_disk(self):
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(self._state_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
 
             generation_date_str = state.get("generation_date")
@@ -78,14 +77,12 @@ class HoliBotModule(BotModule):
                 self._clear_queue()
                 posts_loaded = 0
 
-                # --- MODIFIED LOGIC HERE ---
                 # A post is considered "pending" if its status is NOT 'posted' or 'skipped'.
                 # This correctly includes items where the 'status' key is missing.
                 for item in self._todays_posts:
                     if item.get("status") not in ["posted", "skipped"]:
                         post_time = datetime.fromisoformat(item["post_time"])
 
-                        # --- NEW: Manually triggered posts might be in the past ---
                         # If a manually re-queued post's time is in the past,
                         # schedule it to post in a few seconds from now to avoid skipping it.
                         if post_time <= now:
@@ -115,9 +112,13 @@ class HoliBotModule(BotModule):
                     asyncio.create_task(self._save_state_to_disk())
 
         except FileNotFoundError:
-            self.logger.info(f"{STATE_FILE} not found. Will be created on generation.")
+            self.logger.info(
+                f"{self._state_file} not found. Will be created on generation."
+            )
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            self.logger.error(f"Error loading state from {STATE_FILE}: {e}. Ignoring.")
+            self.logger.error(
+                f"Error loading state from {self._state_file}: {e}. Ignoring."
+            )
 
     async def _save_state_to_disk(self):
         """Saves the current state (including all posts and their statuses) to the state file."""
@@ -128,18 +129,16 @@ class HoliBotModule(BotModule):
             "posts": self._todays_posts,
         }
         try:
-            with open(STATE_FILE, "w") as f:
+            with open(self._state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
             self.logger.debug(
-                f"State saved to {STATE_FILE} with {len(self._todays_posts)} total posts."
+                f"State saved to {self._state_file} with {len(self._todays_posts)} total posts."
             )
         except Exception as e:
-            self.logger.error(f"Failed to save state to {STATE_FILE}: {e}")
+            self.logger.error(f"Failed to save state to {self._state_file}: {e}")
 
-    # ----- Required API (Largely unchanged, logic is now in helpers) -----
+    # ----- Required API -----
 
-    # ... (register_handlers, has_pending_posts, next_scheduled_event_time, process_due_event, run_scheduled_job) ...
-    # These methods are identical to the previous 'final' version.
     def register_handlers(self):
         pass
 
@@ -169,7 +168,7 @@ class HoliBotModule(BotModule):
                 self.logger.error(f"Invalid 'post_time_utc' for generation: {e}")
 
         if self.has_pending_posts:
-            next_post_event = self._generated_content_queue._queue[0][3]
+            next_post_event = self._generated_content_queue._queue[0][3]  # type: ignore
 
         if next_gen_event and next_post_event:
             return min(next_gen_event, next_post_event)
@@ -196,7 +195,7 @@ class HoliBotModule(BotModule):
 
         is_post_due = False
         if self.has_pending_posts:
-            next_post_time = self._generated_content_queue._queue[0][3]
+            next_post_time = self._generated_content_queue._queue[0][3]  # type: ignore
             if now >= next_post_time - timedelta(seconds=2):
                 is_post_due = True
 
@@ -227,8 +226,6 @@ class HoliBotModule(BotModule):
         )
 
     # ----- Internal helpers -----
-    # ... (_parse_hhmm, _within_same_or_next_day_window, _clear_queue) ...
-    # These methods are identical to the previous 'final' version.
     @staticmethod
     def _parse_hhmm(value: str) -> tuple[int, int]:
         hour, minute = map(int, value.split(":"))
@@ -249,15 +246,13 @@ class HoliBotModule(BotModule):
         except QueueEmpty:
             pass
 
-    # ----- Scraping & generation (Unchanged) -----
-    # ... (_get_todays_holidays, _generate_caption, _generate_image, _generate_holiday_content) ...
-    # These methods are identical to the previous 'final' version.
+    # ----- Scraping & generation -----
     def _get_todays_holidays(self) -> list[str]:
         try:
             cfg = self.module_config.get("scraper", {})
             url = cfg.get("holiday_url", "https://www.checkiday.com/")
             limit = cfg.get("holiday_limit", 0)
-            response = requests.get(url)
+            response = requests.get(url, timeout=1000)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             holidays = [
@@ -273,13 +268,14 @@ class HoliBotModule(BotModule):
         prompt_template = llm_cfg.get(
             "text_prompt", "Generate a short, funny caption for '{holiday_name}'."
         )
-        model = llm_cfg.get("text_model", "gpt-3.5-turbo")
+        model = llm_cfg.get("text_model", self._base_text_model)
         try:
             prompt = prompt_template.format(holiday_name=holiday_name)
-            response = await self.client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt}]
+            response = await generate_text(
+                prompt, model, self.client, max_size=1000, translator_options=None
             )
-            return response.choices[0].message.content
+
+            return f"Happy {holiday_name}!\n\n{response}"
         except Exception as e:
             self.logger.error(f"Error generating caption for {holiday_name}: {e}")
             return f"Happy {holiday_name}!"
@@ -289,19 +285,22 @@ class HoliBotModule(BotModule):
         prompt_template = llm_cfg.get(
             "image_prompt", "A humorous image for '{holiday_name}'."
         )
-        model = llm_cfg.get("image_model", "dall-e-3")
+        model = llm_cfg.get("image_model", self._base_image_model)
         try:
             prompt = prompt_template.format(holiday_name=holiday_name)
-            response = await self.client.images.generate(
-                model=model, prompt=prompt, response_format="url"
+            image_url, _caption = await generate_image(
+                prompt,
+                model,
+                self.client,
+                max_caption_size=1000,
+                translator_options=None,
             )
-            image_url = response.data[0].url
             if image_url and image_url.startswith("http"):
                 return image_url
             self.logger.warning(
                 f"Image gen returned invalid URL for {holiday_name}: {image_url}"
             )
-            return None
+            return "https://upload.wikimedia.org/wikipedia/en/thumb/f/f3/Flag_of_Russia.svg/1200px-Flag_of_Russia.svg.png?20120812153731"
         except Exception as e:
             self.logger.error(f"Error generating image for {holiday_name}: {e}")
             return None
@@ -310,7 +309,8 @@ class HoliBotModule(BotModule):
         async with semaphore:
             self.logger.debug(f"Generating content for '{holiday_name}'...")
             caption, image_url = await asyncio.gather(
-                self._generate_caption(holiday_name), self._generate_image(holiday_name)
+                self._generate_caption(holiday_name),
+                self._generate_image(holiday_name),
             )
             self.logger.debug(f"Finished content for '{holiday_name}'.")
             return holiday_name, caption, image_url
@@ -381,7 +381,6 @@ class HoliBotModule(BotModule):
         for i, content in enumerate(generated_content):
             holiday_name, caption, image_url = content
             post_time = schedule[i]
-            # --- MODIFIED: Populate both the in-memory list and the queue ---
             post_record = {
                 "holiday_name": holiday_name,
                 "caption": caption,
@@ -412,7 +411,7 @@ class HoliBotModule(BotModule):
                 self._generated_content_queue.get_nowait()
             )
 
-        english_caption = caption  # The generated caption is always English
+        english_caption = caption
 
         all_chats = target_chat_ids or self.global_config["telegram"]["chat_ids"]
         post_to_chats = [
@@ -432,12 +431,10 @@ class HoliBotModule(BotModule):
             )
             return True
 
-        # --- EFFICIENT BATCHING LOGIC ---
-
         # 1. Group chat IDs by their configured language
         lang_to_chats = defaultdict(list)
         for chat_id in post_to_chats:
-            lang = get_language_for_chat(chat_id, self.global_config)
+            lang = ConfigManager.get_language_for_chat(chat_id, self.global_config)
             lang_to_chats[lang].append(chat_id)
 
         self.logger.info(
@@ -453,7 +450,7 @@ class HoliBotModule(BotModule):
                 final_caption = await self.translator.translate(english_caption, lang)
 
             telegram_cfg = self.module_config.get("telegram_settings", {})
-            caption_limit = telegram_cfg.get("caption_character_limit", 1024)
+            caption_limit = telegram_cfg.get("caption_character_limit", 1000)
             if len(final_caption) > caption_limit:
                 final_caption = final_caption[: caption_limit - 3] + "..."
 
@@ -461,11 +458,11 @@ class HoliBotModule(BotModule):
             for chat_id in chat_ids:
                 try:
                     if image_url:
-                        await self.bot.send_photo(
+                        await self.sign_send_photo(
                             chat_id, image_url, caption=final_caption
                         )
                     else:
-                        await self.bot.send_message(chat_id, final_caption)
+                        await self.sign_send_message(chat_id, final_caption)
                 except ApiTelegramException as e:
                     self.logger.error(
                         f"Telegram API Error sending to {chat_id} for {holiday}: {e}"

@@ -89,6 +89,7 @@ def instantiate_bot_modules():
                 is_module_enabled_for_chat_callback=partial(
                     is_module_enabled_for_chat_helper, module_name=name
                 ),
+                dev=DEV_MODE,
             )
             instance.register_handlers()
             ACTIVE_BOT_MODULES.append(instance)

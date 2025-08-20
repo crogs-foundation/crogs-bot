@@ -34,7 +34,7 @@ chat_module_settings:
 
 parts:
   holibot:
-    enabled: false
+    enabled: true
     default_enabled_on_join: false
     scheduler:
       post_time_utc: "23:24"
@@ -42,7 +42,7 @@ parts:
       post_end_time_utc: "23:27"
     scraper:
       holiday_url: https://www.checkiday.com/
-      holiday_limit: 2
+      holiday_limit: 0
     llm:
       concurrency_limit: 5
       text_model: qwen-3-32b
@@ -52,7 +52,7 @@ parts:
         '{holiday_name}'."
       image_prompt: "A humorous, creative image for the holiday: '{holiday_name}'."
     telegram_settings:
-      caption_character_limit: 1024
+      caption_character_limit: 1000
       post_delay_seconds: 1
   jokebot:
     enabled: true

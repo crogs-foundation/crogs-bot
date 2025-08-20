@@ -1,6 +1,8 @@
 # src/bot_modules/base.py
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from g4f.client import AsyncClient
@@ -17,6 +19,9 @@ class BotModule(ABC):
     Each module represents a distinct functionality of the bot.
     """
 
+    _state_folder_prod: Path = Path("./state")
+    _state_folder_dev: Path = Path("./state_dev")
+
     def __init__(
         self,
         name: str,
@@ -27,6 +32,7 @@ class BotModule(ABC):
         global_config: dict,
         logger: Logger,
         is_module_enabled_for_chat_callback: Callable[[int], bool],
+        dev: bool,
     ):
         """
         Args:
@@ -47,6 +53,8 @@ class BotModule(ABC):
         self.global_config = global_config
         self.logger = logger.get_child(self.__class__.__name__)
         self.is_enabled_for_chat = is_module_enabled_for_chat_callback
+        self.state_folder = self._state_folder_dev if dev else self._state_folder_prod
+        os.makedirs(self.state_folder, exist_ok=True)
 
         self._base_text_model = self.global_config.get("llm_settings", {}).get(
             "base_text_model", "qwen-3-32b"
@@ -94,6 +102,21 @@ class BotModule(ABC):
 
         await self.bot.send_message(
             chat_id, self._sign_response(response), parse_mode="Markdown", **kwargs
+        )
+
+    async def sign_send_photo(
+        self,
+        chat_id: int,
+        image_url: str,
+        caption: Optional[str] = None,
+        **kwargs,
+    ):
+        await self.bot.send_photo(
+            chat_id,
+            image_url,
+            caption=self._sign_response(caption) if caption else None,
+            parse_mode="Markdown",
+            **kwargs,
         )
 
     # ----- Abstract API -----

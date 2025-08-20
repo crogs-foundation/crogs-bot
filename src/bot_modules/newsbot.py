@@ -31,6 +31,7 @@ class NewsBotModule(BotModule):
         global_config,
         logger,
         is_module_enabled_for_chat_callback: Callable[[int], bool],
+        dev,
     ):
         super().__init__(
             name,
@@ -41,6 +42,7 @@ class NewsBotModule(BotModule):
             global_config,
             logger,
             is_module_enabled_for_chat_callback,
+            dev,
         )
         self.posted_article_urls = set()
         self._state_data = {"posted_articles": {}}

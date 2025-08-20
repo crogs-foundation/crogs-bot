@@ -25,6 +25,7 @@ class ImageGeneratorModule(BotModule):
         global_config,
         logger,
         is_module_enabled_for_chat_callback: Callable[[int], bool],
+        dev,
     ):
         super().__init__(
             name,
@@ -35,6 +36,7 @@ class ImageGeneratorModule(BotModule):
             global_config,
             logger,
             is_module_enabled_for_chat_callback,
+            dev,
         )
         self.logger.info(f"ImageGeneratorModule '{self.name}' initialized.")
 
