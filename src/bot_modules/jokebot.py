@@ -1,4 +1,3 @@
-# src/bot_modules/jokebot.py
 import asyncio
 from datetime import datetime
 from typing import Callable, Optional
@@ -39,7 +38,9 @@ class JokeGeneratorModule(BotModule):
         )
         self.logger.info(f"JokeGeneratorModule '{self.name}' initialized.")
 
-    async def _handle_joke_request(self, message, topic, target_lang):
+    async def _handle_joke_request(
+        self, message: Message, topic: Optional[str], target_lang: str
+    ):
         """
         Handles the long-running process of generating and sending a joke
         in a background task. This prevents blocking the main bot loop.
@@ -80,7 +81,7 @@ class JokeGeneratorModule(BotModule):
                 self.logger.debug(f"Received /joke command with topic: '{topic}'")
 
             # --- Generating Message with Translation ---
-            reply_text = f"Generating a joke{' about ' + topic if topic else '...'}"
+            reply_text = f"Generating a joke{' about ' + topic[:100] if topic else '...'}"
             await self.sign_reply(
                 message, reply_text, utility=True, target_lang=target_lang
             )
@@ -127,6 +128,8 @@ class JokeGeneratorModule(BotModule):
                 f"Telegram API Error sending to {target_message.chat.id}: {e}"
             )
 
+    # ----- Abstract Methods -----
+
     async def run_scheduled_job(self, target_chat_ids: Optional[list[int]] = None):
         pass
 
@@ -139,6 +142,4 @@ class JokeGeneratorModule(BotModule):
         return None
 
     async def process_due_event(self):
-        self.logger.debug(
-            f"'{self.name}': process_due_event called, but no scheduled events to process."
-        )
+        pass

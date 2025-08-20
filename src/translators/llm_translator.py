@@ -35,8 +35,10 @@ class LLMTranslator(Translator):
             self.logger.error(f"Failed to initialize LLM Translator: {e}")
             return False
 
-    async def translate(self, text: str, target_lang: str) -> str:
-        if not text or not target_lang or target_lang.lower() in ["en", "en-us"]:
+    async def translate(
+        self, text: str, target_lang: str, source_lang: list[str] = ["en", "en-us"]
+    ) -> str:
+        if not text or not target_lang or target_lang.lower() in source_lang:
             return text
 
         prompt = self.prompt_template.format(target_lang=target_lang, text=text)
@@ -49,8 +51,10 @@ class LLMTranslator(Translator):
             self.logger.error(f"LLM translation failed for text to '{target_lang}': {e}")
             return text
 
-    async def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
-        if not texts or not target_lang or target_lang.lower() in ["en", "en-us"]:
+    async def translate_batch(
+        self, texts: list[str], target_lang: str, source_lang: list[str] = ["en", "en-us"]
+    ) -> list[str]:
+        if not texts or not target_lang or target_lang.lower() in source_lang:
             return texts
 
         self.logger.debug(

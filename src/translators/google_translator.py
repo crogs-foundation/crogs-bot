@@ -50,14 +50,16 @@ class GoogleTranslator(Translator):
             self.is_ready = False
             return False
 
-    async def translate(self, text: str, target_lang: str) -> str:
+    async def translate(
+        self, text: str, target_lang: str, source_lang: list[str] = ["en", "en-us"]
+    ) -> str:
         """
         Translates text by running the isolated translation task in a separate thread.
         """
         if not self.is_ready:
             self.logger.warning("Translation skipped; translator is not ready.")
             return text
-        if not text or not target_lang or target_lang.lower() in ["en", "en-us"]:
+        if not text or not target_lang or target_lang.lower() in source_lang:
             return text
 
         try:
@@ -72,14 +74,16 @@ class GoogleTranslator(Translator):
             self.logger.error(f"Failed to translate text to '{target_lang}': {e}")
             return text
 
-    async def translate_batch(self, texts: list[str], target_lang: str) -> list[str]:
+    async def translate_batch(
+        self, texts: list[str], target_lang: str, source_lang: list[str] = ["en", "en-us"]
+    ) -> list[str]:
         """
         Translates a batch of texts by running the isolated translation task in a separate thread.
         """
         if not self.is_ready:
             self.logger.warning("Batch translation skipped; translator is not ready.")
             return texts
-        if not texts or not target_lang or target_lang.lower() in ["en", "en-us"]:
+        if not texts or not target_lang or target_lang.lower() in source_lang:
             return texts
 
         try:

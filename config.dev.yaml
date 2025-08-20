@@ -65,10 +65,10 @@ parts:
         "Tell me a hilarious joke about {topic} up to 2000 symbols.
         Return only the final joke, without any additional comments or explanations"
   imagebot:
-    enabled: false
+    enabled: true
     default_enabled_on_join: true
     llm:
-      image_model: flux-dev
+      image_model: "midjourney"
       image_prompt_template: "{prompt}"
   newsbot:
     enabled: false
