@@ -1,15 +1,12 @@
-# src/translator.py
 import asyncio
 
 from googletrans import Translator as GoogleApiTranslator
 
 from src.logger import Logger
+from src.translators.base import Translator
 
 
-# --- THIS IS THE KEY ---
-# This is a standalone, top-level function. It does not access `self`.
-# It will be executed in a separate thread by `asyncio.to_thread`.
-def _run_translation_in_thread(text_or_texts, dest: str):
+def _run_google_translation_in_thread(text_or_texts, dest: str):
     """
     Creates a new translator instance and a new event loop to run a
     translation task. This function is designed to be self-contained,
@@ -20,19 +17,19 @@ def _run_translation_in_thread(text_or_texts, dest: str):
     translator = GoogleApiTranslator()
 
     # 2. Run its async method in a new event loop created just for this thread.
-    #    `asyncio.run()` handles creating, running, and closing the loop.
     return asyncio.run(translator.translate(text_or_texts, dest=dest))
 
 
-class Translator:
+class GoogleTranslator(Translator):
     """
     A service to handle text translation using the googletrans library.
     This implementation correctly isolates the blocking and event-loop-conflicting
     library by creating a new instance for each operation in a separate thread.
     """
 
-    def __init__(self, logger: Logger):
-        self.logger = logger.get_child("Translator")
+    def __init__(self, config: dict, logger: Logger):
+        super().__init__(config)
+        self.logger = logger.get_child("GoogleTranslator")
         self.is_ready = False
 
     async def check_api(self) -> bool:
@@ -42,7 +39,7 @@ class Translator:
         self.logger.info("Checking googletrans API connection...")
         try:
             # We call our new, isolated function in a thread.
-            await asyncio.to_thread(_run_translation_in_thread, "hello", "es")
+            await asyncio.to_thread(_run_google_translation_in_thread, "hello", "es")
             self.logger.info("googletrans API seems to be working.")
             self.is_ready = True
             return True
@@ -68,7 +65,7 @@ class Translator:
                 f"Translating '{text[:30]}...' to '{target_lang}' in isolated thread."
             )
             result = await asyncio.to_thread(
-                _run_translation_in_thread, text, target_lang
+                _run_google_translation_in_thread, text, target_lang
             )
             return result.text
         except Exception as e:
@@ -90,7 +87,7 @@ class Translator:
                 f"Batch translating {len(texts)} texts to '{target_lang}' in isolated thread."
             )
             results = await asyncio.to_thread(
-                _run_translation_in_thread, texts, target_lang
+                _run_google_translation_in_thread, texts, target_lang
             )
             return [result.text for result in results]
         except Exception as e:

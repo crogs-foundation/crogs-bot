@@ -38,3 +38,10 @@ line-length=90
 [tool.ruff.lint]
 extend-select = ["I"]
 ignore=["E402"]
+
+[tool.pylint.messages_control]
+disable = [
+    "missing-function-docstring",
+    "missing-module-docstring",
+    "broad-exception-caught"
+]

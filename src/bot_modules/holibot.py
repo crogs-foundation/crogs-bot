@@ -28,23 +28,23 @@ class HoliBotModule(BotModule):
 
     def __init__(
         self,
+        name,
         bot,
         client,
         translator,  # Added translator
         module_config,
         global_config,
         logger,
-        save_state_callback: Callable[[str, str], None],
         is_module_enabled_for_chat_callback: Callable[[int], bool],
     ):
         super().__init__(
+            name,
             bot,
             client,
             translator,  # Pass to super
             module_config,
             global_config,
             logger,
-            save_state_callback,
             is_module_enabled_for_chat_callback,
         )
         self.logger.info(f"HoliBotModule '{self.name}' initialized.")

@@ -1,5 +1,4 @@
-# src/settings_manager.py
-
+from typing import Callable, Optional
 
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import (
@@ -7,7 +6,10 @@ from telebot.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    User,
 )
+
+from src.logger import Logger
 
 
 class SettingsManager:
@@ -16,7 +18,12 @@ class SettingsManager:
     """
 
     def __init__(
-        self, bot: AsyncTeleBot, config_ref: dict, logger, save_callback, reload_callback
+        self,
+        bot: AsyncTeleBot,
+        config_ref: dict,
+        logger: Logger,
+        save_callback: Callable[[dict], None],
+        reload_callback,
     ):
         self.bot = bot
         self.config = config_ref
@@ -47,6 +54,8 @@ class SettingsManager:
 
     async def _handle_pending_input(self, message: Message):
         """A generic message handler that checks if we are waiting for input from a user."""
+        if message.from_user is None:
+            return
         user_key = (message.chat.id, message.from_user.id)
 
         if message.text == "/cancel" and user_key in self._pending_param_inputs:
@@ -69,9 +78,8 @@ class SettingsManager:
             context = self._pending_param_inputs.pop(user_key)
             await self._process_new_param_value(message, **context)
 
-    # --- Command Handlers ---
     async def _handle_settings_command(self, message: Message):
-        if not self._is_admin(message.from_user.id):
+        if not self._is_admin(message.from_user):
             await self.bot.reply_to(message, "You are not authorized.")
             return
 
@@ -97,11 +105,11 @@ class SettingsManager:
 
     # --- Main Callback Router ---
     async def _handle_callback_query(self, call: CallbackQuery):
-        if call.data.startswith("lang_set"):
+        if call.data is None or call.data.startswith("lang_set"):
             await self._process_public_language_set(call)
             return
 
-        if not self._is_admin(call.from_user.id):
+        if not self._is_admin(call.from_user):
             await self.bot.answer_callback_query(
                 call.id, "You are not authorized.", show_alert=True
             )
@@ -118,6 +126,8 @@ class SettingsManager:
 
     # --- Callback Processors ---
     async def _process_public_language_set(self, call: CallbackQuery):
+        if call.data is None:
+            return
         parts = call.data.split(":")
         target_chat_id, lang_code = int(parts[1]), parts[2]
         if call.message.chat.id != target_chat_id:
@@ -126,13 +136,15 @@ class SettingsManager:
             )
             return
         self._get_or_create_chat_settings(target_chat_id)["language"] = lang_code
-        self.save_config()
+        self.save_config(self.config)
         await self.bot.answer_callback_query(
             call.id, f"Language for this chat set to {lang_code}."
         )
         await self.bot.delete_message(call.message.chat.id, call.message.message_id)
 
     async def _process_admin_callback(self, call: CallbackQuery):
+        if call.data is None:
+            return
         parts = call.data.split(":")
         action = parts[0]
         is_private = call.message.chat.type == "private"
@@ -155,7 +167,7 @@ class SettingsManager:
             self._get_or_create_chat_settings(target_chat_id)[
                 module_name
             ] = not current_status
-            self.save_config()
+            self.save_config(self.config)
             await self.bot.answer_callback_query(
                 call.id,
                 f"'{module_name}' is now {'enabled' if not current_status else 'disabled'}.",
@@ -171,7 +183,7 @@ class SettingsManager:
         elif action == "settings_set_lang":
             target_chat_id, lang_code = int(parts[1]), parts[2]
             self._get_or_create_chat_settings(target_chat_id)["language"] = lang_code
-            self.save_config()
+            self.save_config(self.config)
             await self.bot.answer_callback_query(call.id, f"Language set to {lang_code}.")
             new_text, new_markup = await self._generate_chat_config_menu(
                 target_chat_id, from_pm=is_private
@@ -183,7 +195,7 @@ class SettingsManager:
         elif action == "settings_set_translation_strategy":
             strategy = parts[1]
             self.config["translation"]["strategy"] = strategy
-            self.save_config()
+            self.save_config(self.config)
             await self.bot.answer_callback_query(
                 call.id, f"Translation strategy set to '{strategy}'."
             )
@@ -195,7 +207,6 @@ class SettingsManager:
             new_text, new_markup = await self._generate_module_params_menu(
                 module_name, page
             )
-        # --- NEW ACTION HANDLER FOR EDITING BY INDEX ---
         elif action == "settings_module_edit_idx":
             _, module_name, index_str = parts
             index = int(index_str)
@@ -260,9 +271,14 @@ class SettingsManager:
         self, message: Message, module_name: str, key_path: str
     ):
         new_value_str = message.text
+        if new_value_str is None:
+            return
         new_value = None
         if new_value_str.lower() in ["true", "false"]:
             new_value = new_value_str.lower() == "true"
+        elif len(new_value_str) > 8:  # Heuristic to skip big numerics
+            new_value = new_value_str
+
         elif new_value_str.isdigit():
             new_value = int(new_value_str)
         else:
@@ -270,8 +286,9 @@ class SettingsManager:
                 new_value = float(new_value_str)
             except ValueError:
                 new_value = new_value_str
+
         self._set_nested_key(self.config, f"parts.{module_name}.{key_path}", new_value)
-        self.save_config()
+        self.save_config(self.config)
         await self.bot.send_message(
             message.chat.id, f"✅ Successfully set `{key_path}` to `{new_value}`."
         )
@@ -282,7 +299,6 @@ class SettingsManager:
         )
 
     # --- Menu Generators ---
-    # ... (Most menu generators are unchanged)
     async def _generate_main_menu(self, chat_id, is_private):
         markup = InlineKeyboardMarkup(row_width=1)
         if is_private:
@@ -431,7 +447,6 @@ class SettingsManager:
         markup.add(InlineKeyboardButton("🔙 Back", callback_data="settings_global"))
         return "Select a module to configure:", markup
 
-    # --- MODIFIED: This menu now uses indices in callback_data ---
     async def _generate_module_params_menu(self, module_name, page=0):
         markup = InlineKeyboardMarkup(row_width=1)
         params_dict = self.config.get("parts", {}).get(module_name, {})
@@ -479,8 +494,10 @@ class SettingsManager:
         return f"Parameters for *{module_name.capitalize()}*:", markup
 
     # --- Helper Methods ---
-    def _is_admin(self, user_id):
-        return user_id in self.config.get("telegram", {}).get("admin_ids", [])
+    def _is_admin(self, user: Optional[User]):
+        return user is not None and str(user.id) in self.config.get("telegram", {}).get(
+            "admin_ids", []
+        )
 
     def _get_or_create_chat_settings(self, chat_id):
         chat_id_str = str(chat_id)

@@ -5,7 +5,23 @@ telegram:
     - "-1002777148413"
     - "-4883974576"
 translation:
-  strategy: prompt
+  provider: "llm" # "google" or "llm"
+  strategy: "prompt"
+  translate_utility: false
+
+  llm_translator_settings:
+    # Model to use for translation tasks.
+    model: "qwen-3-14b"
+    # The prompt template for the LLM.
+    prompt_template: "Translate the following text below to {target_lang}.
+      Return only the translated text, without any additional comments or explanations. Text:
+      \n\n---\n\n
+      {text}"
+
+llm_settings:
+  base_text_model: "qwen-3-32b"
+  base_image_model: "flux-dev"
+
 chat_module_settings:
   "-1002777148413":
     jokebot: false
@@ -15,11 +31,10 @@ chat_module_settings:
     holibot: true
     newsbot: true
     language: ru
-webapp:
-  url: https://f6e2268f5aa0.ngrok-free.app/
+
 parts:
   holibot:
-    enabled: true
+    enabled: false
     default_enabled_on_join: false
     scheduler:
       post_time_utc: "23:24"
@@ -44,16 +59,19 @@ parts:
     default_enabled_on_join: true
     llm:
       text_model: qwen-3-32b
-      joke_prompt: Tell me a hilarious joke up to 2000 symbols
-      joke_prompt_with_topic: Tell me a joke about {topic} up to 2000 symbols length.
+      joke_prompt: "Tell me a hilarious joke up to 2000 symbols.
+        Return only the final joke, without any additional comments or explanations"
+      joke_prompt_with_topic:
+        "Tell me a hilarious joke about {topic} up to 2000 symbols.
+        Return only the final joke, without any additional comments or explanations"
   imagebot:
-    enabled: true
+    enabled: false
     default_enabled_on_join: true
     llm:
       image_model: flux-dev
       image_prompt_template: "{prompt}"
   newsbot:
-    enabled: true
+    enabled: false
     default_enabled_on_join: false
     scheduler:
       post_start_time_utc: 07:00

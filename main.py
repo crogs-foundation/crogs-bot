@@ -1,13 +1,9 @@
-# main.py
-
 import argparse
 import asyncio
-import os
 import signal
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
-import yaml
 from dotenv import load_dotenv
 from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
@@ -18,69 +14,62 @@ from src.bot_modules.holibot import HoliBotModule
 from src.bot_modules.imagebot import ImageGeneratorModule
 from src.bot_modules.jokebot import JokeGeneratorModule
 from src.bot_modules.newsbot import NewsBotModule
+from src.config_management import ConfigManager
 from src.logger import Logger
 from src.settings_manager import SettingsManager  # <-- IMPORT
-from src.translator import Translator
+from src.translators.base import Translator
+from src.translators.google_translator import GoogleTranslator
+from src.translators.llm_translator import LLMTranslator
 
-# --- Load environment variables, Argument parsing, Logger ---
+# --- Prse arguments and setup Logger---
 load_dotenv()
 parser = argparse.ArgumentParser(description="Telegram Holiday Bot")
 parser.add_argument("--mode", type=str, choices=["dev", "prod"], default="prod")
 args = parser.parse_args()
 DEV_MODE = args.mode == "dev"
-logger = Logger(__name__, level="DEBUG" if DEV_MODE else "INFO")
+logger = Logger("main", level="DEBUG" if DEV_MODE else "ERROR")
 logger.info(f"Application starting in '{args.mode}' mode.")
 
 # --- Bot and client initialization ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not found in .env file!")
-bot = AsyncTeleBot(TELEGRAM_BOT_TOKEN)
+CONFIG_MANAGER = ConfigManager(logger, dev=DEV_MODE)
+bot = AsyncTeleBot(CONFIG_MANAGER.tg_token)
 client = AsyncClient()
-CONFIG_FILE = "config.yaml"
-config: dict = {}
-active_bot_modules: list[BotModule] = []
-translator: Translator = None
+ACTIVE_BOT_MODULES: list[BotModule] = []
 
 
-# --- Config management ---
-def load_config() -> dict:
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            loaded_config = yaml.safe_load(f)
-            if "chat_module_settings" not in loaded_config:
-                loaded_config["chat_module_settings"] = {}
-            return loaded_config
-    except FileNotFoundError:
-        logger.warning(f"{CONFIG_FILE} not found. Please create it with defaults.")
-        raise
+def translator_factory(
+    logger_param: Logger, config: dict, client_param: AsyncClient
+) -> Translator:
+    """Creates a translator instance based on the application config."""
+    provider = config.get("translation", {}).get("provider", "google").lower()
+    logger.info(f"Initializing translator with provider: '{provider}'")
+
+    if provider == "llm":
+        return LLMTranslator(config, logger_param, client_param)
+    elif provider == "google":
+        return GoogleTranslator(config, logger_param)
+    else:
+        logger.error(
+            f"Unknown translator provider '{provider}'. Defaulting to GoogleTranslator."
+        )
+        return GoogleTranslator(config, logger_param)
 
 
-def save_config_file():
-    """Saves the global config dictionary to the YAML file."""
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(config, f, sort_keys=False, indent=2)
-    logger.debug("Configuration saved to disk.")
-
-
-def save_chat_ids(chat_ids: list[int]):
-    config["telegram"]["chat_ids"] = chat_ids
-    save_config_file()
+TRANSLATOR: Translator = translator_factory(logger, CONFIG_MANAGER.config, client)
 
 
 # --- Bot module instantiation ---
 def instantiate_bot_modules():
-    global active_bot_modules
-    for module in active_bot_modules:
+    for module in ACTIVE_BOT_MODULES:
         getattr(module, "close", lambda: None)()
-    active_bot_modules.clear()
+    ACTIVE_BOT_MODULES.clear()
     module_classes = {
         "holibot": HoliBotModule,
         "jokebot": JokeGeneratorModule,
         "imagebot": ImageGeneratorModule,
         "newsbot": NewsBotModule,
     }
-    for name, part_cfg in config.get("parts", {}).items():
+    for name, part_cfg in CONFIG_MANAGER.extract("parts", {}).items():
         if not part_cfg.get("enabled"):
             logger.info(f"Module '{name}' disabled globally. Skipping.")
             continue
@@ -90,46 +79,44 @@ def instantiate_bot_modules():
             continue
         try:
             instance = module_cls(
+                name=name,
                 bot=bot,
                 client=client,
-                translator=translator,
+                translator=TRANSLATOR,
                 module_config=part_cfg,
-                global_config=config,
+                global_config=CONFIG_MANAGER.config,
                 logger=logger,
-                # Pass a simple helper for the callback, not the whole manager
                 is_module_enabled_for_chat_callback=partial(
                     is_module_enabled_for_chat_helper, module_name=name
                 ),
-                save_state_callback=None,  # State is now saved directly in config
             )
             instance.register_handlers()
-            active_bot_modules.append(instance)
+            ACTIVE_BOT_MODULES.append(instance)
             logger.info(f"Module '{name}' loaded.")
         except Exception as e:
             logger.error(f"Failed to load module '{name}': {e}")
 
 
-# --- Helper, now outside the manager for module use ---
 def is_module_enabled_for_chat_helper(chat_id: int, module_name: str) -> bool:
-    module_global_config = config.get("parts", {}).get(module_name, {})
+    module_global_config = CONFIG_MANAGER.extract(f"parts.{module_name}", {})
     if not module_global_config.get("enabled", False):
         return False
-    chat_settings = config.get("chat_module_settings", {}).get(str(chat_id), {})
+    chat_settings = CONFIG_MANAGER.extract(f"chat_module_settings.{chat_id}", {})
     if module_name in chat_settings:
         return chat_settings[module_name]
     return module_global_config.get("default_enabled_on_join", True)
 
 
-async def trigger_modules(target_chat_ids=None):
-    if not active_bot_modules:
+async def trigger_modules(target_chat_ids=None) -> bool:
+    if not ACTIVE_BOT_MODULES:
         return False
-    for module in active_bot_modules:
+    for module in ACTIVE_BOT_MODULES:
         asyncio.create_task(module.run_scheduled_job(target_chat_ids=target_chat_ids))
         await asyncio.sleep(0.1)
     return True
 
 
-# --- Basic Bot handlers ---
+# --- Bot Handlers---
 @bot.message_handler(commands=["start", "help"])
 async def handle_start(message):
     await bot.reply_to(
@@ -137,12 +124,10 @@ async def handle_start(message):
     )
 
 
-# --- THIS IS THE FIX ---
-# Restore decorators for simple command handlers in main.py
 @bot.message_handler(commands=["postnow"])
 async def handle_postnow(message):
-    user_id = message.from_user.id
-    if user_id not in config.get("telegram", {}).get("admin_ids", []):
+    user_id = str(message.from_user.id)
+    if user_id not in CONFIG_MANAGER.extract("telegram.admin_ids", []):
         await bot.reply_to(message, "You are not authorized.")
         return
 
@@ -154,8 +139,8 @@ async def handle_postnow(message):
 
 @bot.message_handler(commands=["posttome"])
 async def handle_posttome(message):
-    user_id = message.from_user.id
-    if user_id not in config.get("telegram", {}).get("admin_ids", []):
+    user_id = str(message.from_user.id)
+    if user_id not in CONFIG_MANAGER.extract("telegram.admin_ids", []):
         await bot.reply_to(message, "You are not authorized.")
         return
 
@@ -165,41 +150,37 @@ async def handle_posttome(message):
     await bot.reply_to(message, "Triggered modules to post to this chat.")
 
 
-# --------------------
-
-
 @bot.my_chat_member_handler()
 async def handle_chat_update(message: ChatMemberUpdated):
-    chat_id = message.chat.id
-    chat_ids = config["telegram"].get("chat_ids", [])
+    chat_id = str(message.chat.id)
+    chat_ids: list[str] = CONFIG_MANAGER.extract("telegram.chat_ids", [])
     if (
         message.new_chat_member.status in ["member", "administrator"]
         and chat_id not in chat_ids
     ):
         chat_ids.append(chat_id)
-        save_chat_ids(chat_ids)
+        CONFIG_MANAGER.save_chat_ids(chat_ids)
         await bot.send_message(chat_id, "Hello! I can now post in this chat.")
         logger.info(f"Bot added to new group: {chat_id}")
     elif message.new_chat_member.status in ["kicked", "left"] and chat_id in chat_ids:
         chat_ids.remove(chat_id)
-        save_chat_ids(chat_ids)
-        config.get("chat_module_settings", {}).pop(str(chat_id), None)
-        save_config_file()
+        CONFIG_MANAGER.save_chat_ids(chat_ids)
+        CONFIG_MANAGER.config.get("chat_module_settings", {}).pop(str(chat_id), None)
+        CONFIG_MANAGER.save_config_file()
         logger.info(f"Bot removed from group: {chat_id}. Cleared its specific settings.")
 
 
 # --- Background tasks & Main execution ---
-# (This part remains the same, no changes needed)
 async def background_scheduler():
     logger.info("Scheduler: Starting background scheduler for modules.")
     while True:
         now = datetime.now(timezone.utc)
         next_sleep_duration_seconds = timedelta(days=2).total_seconds()
         tasks_to_run = []
-        if not active_bot_modules:
+        if not ACTIVE_BOT_MODULES:
             await asyncio.sleep(60)
             continue
-        for module in active_bot_modules:
+        for module in ACTIVE_BOT_MODULES:
             next_event_time = module.next_scheduled_event_time
             if not next_event_time:
                 continue
@@ -245,37 +226,32 @@ async def polling_loop(shutdown_event: asyncio.Event):
 
 def reload_config_and_modules():
     """Function to reload config from disk and re-instantiate modules."""
+    global TRANSLATOR
     logger.info("Reloading config and modules...")
-    global config
-    config = load_config()
+    CONFIG_MANAGER.reload()
+    TRANSLATOR = translator_factory(logger, CONFIG_MANAGER.config, client)
+
     instantiate_bot_modules()
     logger.info("Config and modules reloaded.")
 
 
 async def main():
-    global config, translator
-    config = load_config()
-    translator = Translator(logger=logger)
-    await translator.check_api()
+    await TRANSLATOR.check_api()
     instantiate_bot_modules()
 
-    # --- SETUP SETTINGS MANAGER ---
     settings_manager = SettingsManager(
         bot=bot,
-        config_ref=config,
+        config_ref=CONFIG_MANAGER.config,
         logger=logger,
-        save_callback=save_config_file,
+        save_callback=CONFIG_MANAGER.update_config,
         reload_callback=reload_config_and_modules,
     )
     settings_manager.register_handlers()
-    # ----------------------------
 
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown_event.set)
-
-    # Use a list of tasks to run with gather
 
     tasks = [
         background_scheduler(),

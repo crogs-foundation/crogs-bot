@@ -5,9 +5,10 @@ from typing import Callable, Optional
 
 from g4f.client import AsyncClient
 from telebot.async_telebot import AsyncTeleBot
+from telebot.types import Message
 
 from src.logger import Logger
-from src.translator import Translator  # <-- ADDED: Import the Translator for type hinting
+from src.translators.base import Translator
 
 
 class BotModule(ABC):
@@ -18,13 +19,13 @@ class BotModule(ABC):
 
     def __init__(
         self,
+        name: str,
         bot: AsyncTeleBot,
         client: AsyncClient,
-        translator: Translator,  # <-- ADDED: The translator service instance
+        translator: Translator,
         module_config: dict,
         global_config: dict,
         logger: Logger,
-        save_state_callback: Callable[[str, str], None],
         is_module_enabled_for_chat_callback: Callable[[int], bool],
     ):
         """
@@ -38,15 +39,62 @@ class BotModule(ABC):
             save_state_callback: Callback to persist module-specific state.
             is_module_enabled_for_chat_callback: Callback to check if the module is enabled for a given chat.
         """
+        self.name = name
         self.bot = bot
         self.client = client
-        self.translator = translator  # <-- ADDED: Store the translator instance
+        self.translator = translator
         self.module_config = module_config
         self.global_config = global_config
-        self.name = module_config.get("name", self.__class__.__name__)
-        self.logger = logger.get_child(self.name)
-        self._save_state_callback = save_state_callback
+        self.logger = logger.get_child(self.__class__.__name__)
         self.is_enabled_for_chat = is_module_enabled_for_chat_callback
+
+        self._base_text_model = self.global_config.get("llm_settings", {}).get(
+            "base_text_model", "qwen-3-32b"
+        )
+        self._base_image_model = self.global_config.get("llm_settings", {}).get(
+            "base_image_model", "flux"
+        )
+
+    def _sign_response(self, response: str) -> str:
+        return f"{response}\n\n#{self.name}"
+
+    async def _translate_response(
+        self,
+        response: str,
+        utility: bool = False,
+        target_lang: Optional[str] = None,
+    ) -> str:
+        if target_lang is not None and (not utility or self.translator.translate_utility):
+            return await self.translator.translate(response, target_lang)
+        return response
+
+    async def sign_reply(
+        self,
+        message: Message,
+        response: str,
+        utility: bool = False,
+        target_lang: Optional[str] = None,
+        **kwargs,
+    ):
+        response = await self._translate_response(response, utility, target_lang)
+
+        await self.bot.reply_to(
+            message, self._sign_response(response), parse_mode="Markdown", **kwargs
+        )
+
+    async def sign_send_message(
+        self,
+        chat_id: int,
+        response: str,
+        utility: bool = False,
+        target_lang: Optional[str] = None,
+        **kwargs,
+    ):
+        response = await self._translate_response(response, utility, target_lang)
+
+        await self.bot.send_message(
+            chat_id, self._sign_response(response), parse_mode="Markdown", **kwargs
+        )
 
     # ----- Abstract API -----
     @abstractmethod
