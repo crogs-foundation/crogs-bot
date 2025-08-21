@@ -7,11 +7,10 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, List, Optional
 
-import requests
-from bs4 import BeautifulSoup
 from telebot.apihelper import ApiTelegramException
 
 from src.bot_modules.base import BotModule
+from src.holiday_scrapers import get_scraper_adapters
 from src.llm import generate_image, generate_text
 
 STATE_FILE = "holibot_state.json"
@@ -46,6 +45,9 @@ class HoliBotModule(BotModule):
             dev,
         )
         self.logger.info(f"HoliBotModule '{self.name}' initialized.")
+        self.scrapers = get_scraper_adapters(
+            self.logger, self.module_config.get("scraper", {})
+        )
         self._generated_content_queue: asyncio.Queue = asyncio.Queue()
         self._last_generation_date: Optional[date] = None
         self._todays_posts: List[dict] = []
@@ -159,7 +161,7 @@ class HoliBotModule(BotModule):
             return min(next_gen_event, next_post_event)
         return next_gen_event or next_post_event
 
-    # --- MODIFIED: Simplified logic to trust the main scheduler ---
+    # --- Simplified logic to trust the main scheduler ---
     async def process_due_event(self):
         now = datetime.now(timezone.utc)
         today = now.date()
@@ -219,21 +221,45 @@ class HoliBotModule(BotModule):
             pass
 
     # --- Scraping & generation ---
-    def _get_todays_holidays(self) -> list[str]:
-        try:
-            cfg = self.module_config.get("scraper", {})
-            url = cfg.get("holiday_url", "https://www.checkiday.com/")
-            limit = cfg.get("holiday_limit", 0)
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            holidays = [
-                h.text.strip() for h in soup.find_all("h2", class_="mdl-card__title-text")
-            ]
-            return holidays[:limit] if limit > 0 else holidays
-        except requests.RequestException as e:
-            self.logger.error(f"Error fetching holidays: {e}")
+    # def _get_todays_holidays(self) -> list[str]:
+    #     try:
+    #         cfg = self.module_config.get("scraper", {})
+    #         url = cfg.get("holiday_url", "https://www.checkiday.com/")
+    #         limit = cfg.get("holiday_limit", 0)
+    #         response = requests.get(url, timeout=10)
+    #         response.raise_for_status()
+    #         soup = BeautifulSoup(response.text, "html.parser")
+    #         holidays = [
+    #             h.text.strip() for h in soup.find_all("h2", class_="mdl-card__title-text")
+    #         ]
+    #         return holidays[:limit] if limit > 0 else holidays
+    #     except requests.RequestException as e:
+    #         self.logger.error(f"Error fetching holidays: {e}")
+    #         return []
+
+    async def _get_todays_holidays(self) -> list[str]:
+        if not self.scrapers:
+            self.logger.warning("No holiday scrapers are configured.")
             return []
+
+        self.logger.info(f"Scraping holidays from {len(self.scrapers)} source(s)...")
+        tasks = [scraper.scrape() for scraper in self.scrapers]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        cfg = self.module_config.get("scraper", {})
+        limit = cfg.get("holiday_limit", 0)
+
+        all_holidays = set()
+        for res in results:
+            if isinstance(res, BaseException):
+                self.logger.error(f"A holiday scraper failed: {res}")
+            elif res:
+                all_holidays.update(res)
+                if limit > 0 and len(res) == limit:
+                    break
+
+        self.logger.info(f"Found a total of {len(all_holidays)} unique holidays.")
+        return list(all_holidays)
 
     async def _generate_caption(self, holiday_name: str) -> str:
         llm_cfg = self.module_config.get("llm", {})
@@ -311,7 +337,7 @@ class HoliBotModule(BotModule):
         self.logger.info(f"Starting content generation for {today}.")
         self._last_generation_date = today
         self._todays_posts = []
-        holidays = await asyncio.to_thread(self._get_todays_holidays)
+        holidays = await self._get_todays_holidays()
         if not holidays:
             await self._save_state_to_disk()
             return False

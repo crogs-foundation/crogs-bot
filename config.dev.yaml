@@ -33,27 +33,63 @@ chat_module_settings:
   "-4883974576":
     language: ru
     holibot: true
+    newsbot: true
 
 parts:
   holibot:
     enabled: true
     default_enabled_on_join: false
     scheduler:
-      post_time_utc: "21:00"
-      post_start_time_utc: "22:00"
-      post_end_time_utc: "23:00"
+      post_time_utc: "13:08"
+      post_start_time_utc: "13:12"
+      post_end_time_utc: "13:45"
     scraper:
-      holiday_url: https://www.checkiday.com/
-      holiday_limit: 0
+      limit: 0
+      adapters:
+        - name: "checkiday"
+          config:
+            url: "https://www.checkiday.com/"
+            limit: 0
+            selector: "h2.mdl-card__title-text"
+        - name: "officeholidays"
+          config:
+            url: "https://www.officeholidays.com/calendars/"
+            limit: 0
+            selector: "figure h3"
+        - name: "timeanddate"
+          config:
+            url: "https://www.timeanddate.com/on-this-day/"
+            limit: 0
+            parts:
+              - "event"
+              - "birth"
     llm:
       concurrency_limit: 5
       text_model: qwen-3-32b
       image_model: flux
-      text_prompt:
-        "Generate a short, funny, and engaging caption for the holiday
-        up to 700 symbols: '{holiday_name}'. Return only the final text, without
-        any additional comments or explanations."
-      image_prompt: "A humorous, creative and crazy image for the holiday: '{holiday_name}'."
+      text_prompt: "You are a witty and fun social media content creator.
+        Your task is to create a funny and crazy caption for the holiday: '{holiday_name}'.
+        Rules:
+        - Use lots of fitting emojis 🎉🍔🤣🔥🕺💃
+        - Make it sound exciting and engaging, like something people would want to share.
+        - Keep it under 700 symbols.
+        - Feel free to add puns, jokes, or playful exaggerations.
+
+        Holiday: '{holiday_name}'
+
+        Now generate the caption. Return only the final caption, without any additional comments or explanations."
+
+      image_prompt:
+        "Create a funny, crazy, and dynamic illustration for '{holiday_name}''.
+        Style: vibrant, over-the-top, and colorful.
+        Requirements:
+        - Include exaggerated elements related to the holiday theme.
+        - Make it playful, humorous, and eye-catching.
+        - Add lots of fun, chaotic details that make people laugh.
+        - Suitable for social media.
+
+        Holiday: '{holiday_name}'"
+
       image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
     telegram_settings:
       caption_character_limit: 1000
@@ -83,9 +119,9 @@ parts:
     enabled: true
     default_enabled_on_join: false
     scheduler:
-      post_start_time_utc: 06:00
-      post_end_time_utc: 09:00
-      post_interval_minutes: 27
+      post_start_time_utc: "13:23"
+      post_end_time_utc: "13:35"
+      post_interval_minutes: 2
     scraper:
       sources:
         - name: CNN World
@@ -123,8 +159,11 @@ parts:
 
         {content}"
       image_prompt:
-        "A dramatic, high-quality, attention-grabbing news-style photorealistic
-        image related to the headline: '{headline}'"
+        "Create a humorous, surreal, and visually dynamic illustration inspired by the news headline: '{headline}'.
+        Guidelines:
+        - Exaggerate the situation in a playful and cartoonish way.
+        - Add unexpected, funny, or ironic details that highlight the absurdity of the news.
+        - Make it colorful, bold, and eye-catching."
       image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
     state_management:
       history_days: 7
