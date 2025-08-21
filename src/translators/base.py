@@ -13,6 +13,9 @@ class Translator(ABC):
         self.config = config.get("translation", {})
         self.strategy: Literal["prompt", "response"] = self.config["strategy"]
         self.translate_utility: bool = self.config.get("translate_utility", False)
+        self.only_english_models: set[str] = set(
+            self.config.get("only_english_models", [])
+        )
 
     @abstractmethod
     async def check_api(self) -> bool:

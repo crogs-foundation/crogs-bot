@@ -24,6 +24,7 @@ async def _generate_text_inner(
         content = re.sub(
             r"<[Tt]hink>.*?</[Tt]hink>", "", content, flags=re.DOTALL
         ).strip()
+        content = re.sub(r"<translate>(.*?)</translate>", r"\1", content, flags=re.DOTALL)
 
     if max_size:
         return content[:max_size]
@@ -57,9 +58,14 @@ async def generate_text(
         client = AsyncClient()
 
     if translator_options is None or translator_options[1].lower() in ["en", "en-us"]:
-        return await _generate_text_inner(
+        # print(f"{prompt=}")
+
+        response = await _generate_text_inner(
             prompt, model, client, max_size=max_size, **kwargs
         )
+        # print(f"{response=}")
+
+        return response
 
     translator, target_lang = translator_options
 
@@ -67,11 +73,14 @@ async def generate_text(
     if translator.strategy == "prompt":
         final_prompt = await translator.translate(prompt, target_lang)
 
+    # print(f"{final_prompt=}")
+
     response = await _generate_text_inner(
         final_prompt, model, client, max_size=None, **kwargs
     )
+    # print(f"{response=}")
 
-    if translator.strategy == "response":
+    if translator.strategy == "response" or model in translator.only_english_models:
         response = await translator.translate(response, target_lang)
 
     return response[:max_size]

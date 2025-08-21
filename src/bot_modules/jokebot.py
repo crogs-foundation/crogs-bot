@@ -41,14 +41,18 @@ class JokeGeneratorModule(BotModule):
         self.logger.info(f"JokeGeneratorModule '{self.name}' initialized.")
 
     async def _handle_joke_request(
-        self, message: Message, topic: Optional[str], target_lang: str
+        self, message: Message, topic: str, target_lang: str, joke_type: str
     ):
         """
         Handles the long-running process of generating and sending a joke
         in a background task. This prevents blocking the main bot loop.
         """
         try:
-            joke = await self._generate_joke(topic, target_lang)
+            joke = await self._generate_joke(
+                topic,
+                joke_type,
+                target_lang,
+            )
             await self._post_joke(joke, target_message=message)
         except Exception as e:
             self.logger.error(f"Error in background joke generation task: {e}")
@@ -61,60 +65,71 @@ class JokeGeneratorModule(BotModule):
             except Exception as send_e:
                 self.logger.error(f"Failed to send error message to user: {send_e}")
 
+    async def _basic_joke_handler(self, message: Message, joke_type: str = ""):
+        target_lang = ConfigManager.get_language_for_chat(
+            message.chat.id, self.global_config
+        )
+
+        if not self.is_enabled_for_chat(message.chat.id):
+            enabled_err_text = f"The '{self.name}' module is disabled for this chat. An admin can enable it in the settings."
+            await self.sign_reply(
+                message, enabled_err_text, utility=True, target_lang=target_lang
+            )
+            return
+
+        topic = None
+        # Priority 1: Check if the command is a reply to another message.
+        # We also check if that replied-to message actually contains text.
+        if message.reply_to_message and message.reply_to_message.text:
+            topic = message.reply_to_message.text.strip()
+            self.logger.debug(
+                f"Received /joke as a reply. Using replied message text as topic: '{topic}'"
+            )
+        # Priority 2: If not a reply, fall back to the original behavior.
+        # Check for a topic provided directly after the command.
+        else:
+            parts = message.text.split(maxsplit=1) if message.text else ["", ""]
+            if len(parts) < 2 or not parts[1].strip():
+                await self.sign_reply(
+                    message,
+                    "Please provide a topic. \nUsage: `/joke snail in pub`",
+                    utility=True,
+                    target_lang=target_lang,
+                )
+                return
+            topic = parts[1].strip()
+            self.logger.debug(f"Received /joke command with topic: '{topic}'")
+
+        # --- Generating Message with Translation ---
+        reply_text = f"Generating a joke about {topic[:100]}"
+        await self.sign_reply(message, reply_text, utility=True, target_lang=target_lang)
+
+        asyncio.create_task(
+            self._handle_joke_request(message, topic, target_lang, joke_type)
+        )
+
     def register_handlers(self):
         """Register the /joke command handler."""
 
         @self.bot.message_handler(commands=["joke"])
         async def send_joke(message: Message):
-            target_lang = ConfigManager.get_language_for_chat(
-                message.chat.id, self.global_config
-            )
+            await self._basic_joke_handler(message)
 
-            if not self.is_enabled_for_chat(message.chat.id):
-                enabled_err_text = f"The '{self.name}' module is disabled for this chat. An admin can enable it in the settings."
-                await self.sign_reply(
-                    message, enabled_err_text, utility=True, target_lang=target_lang
-                )
-                return
-
-            topic = None
-            # Priority 1: Check if the command is a reply to another message.
-            # We also check if that replied-to message actually contains text.
-            if message.reply_to_message and message.reply_to_message.text:
-                topic = message.reply_to_message.text.strip()
-                self.logger.debug(
-                    f"Received /joke as a reply. Using replied message text as topic: '{topic}'"
-                )
-            # Priority 2: If not a reply, fall back to the original behavior.
-            # Check for a topic provided directly after the command.
-            else:
-                parts = message.text.split(maxsplit=1) if message.text else ["", ""]
-                if len(parts) > 1:
-                    topic = parts[1].strip()
-                    self.logger.debug(f"Received /joke command with topic: '{topic}'")
-
-            # --- Generating Message with Translation ---
-            reply_text = f"Generating a joke{' about ' + topic[:100] if topic else '...'}"
-            await self.sign_reply(
-                message, reply_text, utility=True, target_lang=target_lang
-            )
-
-            asyncio.create_task(self._handle_joke_request(message, topic, target_lang))
+        @self.bot.message_handler(commands=["joke_evil"])
+        async def send_evil_joke(message: Message):
+            await self._basic_joke_handler(message, "_evil")
 
     async def _generate_joke(
-        self, topic: Optional[str] = None, target_lang: str = "en"
+        self, topic: str, joke_type: str, target_lang: str = "en"
     ) -> str:
         llm_cfg = self.module_config.get("llm", {})
 
-        prompt_key = "joke_prompt_with_topic" if topic else "joke_prompt"
-        default_prompt = (
-            "Tell me a short, funny joke about {topic}."
-            if topic
-            else "Tell me a short, funny joke."
+        prompt_template = llm_cfg.get(
+            f"joke_prompt{joke_type}", "Tell me a short, funny joke about {topic}."
         )
-        prompt_template = llm_cfg.get(prompt_key, default_prompt)
-        prompt = prompt_template.format(topic=topic) if topic else prompt_template
-        model = llm_cfg.get("text_model", self._base_text_model)
+        prompt = prompt_template.format(topic=topic)
+
+        model = llm_cfg.get(f"text_model{joke_type}", self._base_text_model)
 
         try:
             return await generate_text(
@@ -145,9 +160,14 @@ class JokeGeneratorModule(BotModule):
         return [
             {
                 "command": "joke",
-                "description": "Tells a joke. You can specify a topic (e.g., /joke cats).",
+                "description": "Tells a joke. You should specify a topic (e.g., /joke cats).",
                 "admin_only": False,
-            }
+            },
+            {
+                "command": "joke_evil",
+                "description": "Tells an EVIL joke. You should specify a topic (e.g., /joke cats).",
+                "admin_only": False,
+            },
         ]
 
     # ----- Abstract Methods -----
