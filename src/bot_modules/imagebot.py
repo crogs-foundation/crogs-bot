@@ -83,27 +83,37 @@ class ImageGeneratorModule(BotModule):
                     f"Image command ignored in chat {message.chat.id} because module is disabled."
                 )
                 return
-
-            parts = message.text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1].strip():
-                await self.sign_reply(
-                    message,
-                    "Please provide a description. \nUsage: `/img a cat sitting on a moon`",
-                    utility=True,
-                    target_lang=target_lang,
+            # Priority 1: Check if the command is a reply to another message.
+            # We also check if that replied-to message actually contains text.
+            if message.reply_to_message and message.reply_to_message.text:
+                prompt = message.reply_to_message.text.strip()
+                self.logger.debug(
+                    f"Received /img as a reply. Using replied message text as prompt: '{prompt[:100]}'"
                 )
-                return
+            # Priority 2: If not a reply, fall back to the original behavior.
+            # Check for a topic provided directly after the command.
+            else:
+                parts = message.text.split(maxsplit=1) if message.text else ["", ""]
+                if len(parts) < 2 or not parts[1].strip():
+                    await self.sign_reply(
+                        message,
+                        "Please provide a description. \nUsage: `/img a cat sitting on a moon`",
+                        utility=True,
+                        target_lang=target_lang,
+                    )
+                    return
 
-            prompt = parts[1].strip()
-            self.logger.info(
-                f"Received /img command in chat {message.chat.id} with prompt: '{prompt}'"
-            )
+                prompt = parts[1].strip()
+                self.logger.info(
+                    f"Received /img command in chat {message.chat.id} with prompt: '{prompt[:100]}'"
+                )
 
             await self.sign_reply(
                 message,
-                f'🎨 Generating an image for: "{prompt}"...',
+                f'🎨 Generating an image for: "{prompt[:100]}"...',
                 utility=True,
                 target_lang=target_lang,
+                parse_mode=None,
             )
 
             # Schedule the image generation and posting to run in the background
@@ -119,7 +129,7 @@ class ImageGeneratorModule(BotModule):
         final_prompt: str = prompt_template.format(prompt=prompt)
 
         self.logger.debug(
-            f"Generating image with model '{model}' and prompt: '{final_prompt}'"
+            f"Generating image with model '{model}' and prompt: '{final_prompt[:200]}'"
         )
         try:
             image_url, _caption = await generate_image(
@@ -149,8 +159,9 @@ class ImageGeneratorModule(BotModule):
             # Telegram captions have a 1024 character limit.
             if len(caption) > 1000:
                 caption = caption[:997] + "..."
-            caption = self._sign_response(caption)
-            await self.bot.send_photo(target_chat_id, image_url, caption=caption)
+            await self.sign_send_photo(
+                target_chat_id, image_url, caption=caption, parse_mode=None
+            )
         except ApiTelegramException as e:
             self.logger.error(
                 f"Telegram API Error sending photo to {target_chat_id}: {e}"

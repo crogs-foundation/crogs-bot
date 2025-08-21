@@ -242,7 +242,6 @@ async def set_bot_commands(bot_param: AsyncTeleBot):
 # --- Background tasks & Main execution ---
 
 
-# --- MODIFIED: Problem 2 Fix ---
 async def background_scheduler(shutdown_event: asyncio.Event):
     """
     More robust scheduler that finds the next absolute event time and sleeps until then.
@@ -301,7 +300,6 @@ async def background_scheduler(shutdown_event: asyncio.Event):
     logger.info("Scheduler task has finished.")
 
 
-# --- MODIFIED: Problem 1 Fix ---
 async def polling_loop(shutdown_event: asyncio.Event):
     """The main polling loop, now aware of the shutdown event."""
     offset, timeout = 0, 10
@@ -331,7 +329,6 @@ def reload_config_and_modules():
     logger.info("Config and modules reloaded.")
 
 
-# --- MODIFIED: Problem 1 Fix ---
 async def main():
     await TRANSLATOR.check_api()
     instantiate_bot_modules()

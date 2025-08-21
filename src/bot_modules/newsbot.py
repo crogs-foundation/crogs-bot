@@ -214,7 +214,6 @@ class NewsBotModule(BotModule):
 
                 self.logger.info(f"Successfully posted article from '{source_name}'.")
 
-                # --- THIS IS THE KEY LOGIC CHANGE ---
                 # Only update the round-robin index on a successful SCHEDULED post.
                 # A manual post should not affect the schedule's order.
                 if not force_post:

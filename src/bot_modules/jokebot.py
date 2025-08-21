@@ -65,7 +65,7 @@ class JokeGeneratorModule(BotModule):
         """Register the /joke command handler."""
 
         @self.bot.message_handler(commands=["joke"])
-        async def send_joke(message):
+        async def send_joke(message: Message):
             target_lang = ConfigManager.get_language_for_chat(
                 message.chat.id, self.global_config
             )
@@ -78,9 +78,20 @@ class JokeGeneratorModule(BotModule):
                 return
 
             topic = None
-            if (parts := message.text.split(maxsplit=1)) and len(parts) > 1:
-                topic = parts[1].strip()
-                self.logger.debug(f"Received /joke command with topic: '{topic}'")
+            # Priority 1: Check if the command is a reply to another message.
+            # We also check if that replied-to message actually contains text.
+            if message.reply_to_message and message.reply_to_message.text:
+                topic = message.reply_to_message.text.strip()
+                self.logger.debug(
+                    f"Received /joke as a reply. Using replied message text as topic: '{topic}'"
+                )
+            # Priority 2: If not a reply, fall back to the original behavior.
+            # Check for a topic provided directly after the command.
+            else:
+                parts = message.text.split(maxsplit=1) if message.text else ["", ""]
+                if len(parts) > 1:
+                    topic = parts[1].strip()
+                    self.logger.debug(f"Received /joke command with topic: '{topic}'")
 
             # --- Generating Message with Translation ---
             reply_text = f"Generating a joke{' about ' + topic[:100] if topic else '...'}"

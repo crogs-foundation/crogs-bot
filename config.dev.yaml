@@ -9,7 +9,7 @@ translation:
   strategy: prompt
   translate_utility: false
   llm_translator_settings:
-    model: qwen-3-30b
+    model: qwen-3-32b
     prompt_template:
       "Translate the text below to {target_lang}. Try to translate\
       \ the original humor or wordplay - don't go after the literal translation. Return\
@@ -25,18 +25,14 @@ chat_module_settings:
     holibot: true
     newsbot: true
     imagebot: false
-  "-4883974576":
-    holibot: true
-    newsbot: true
-    language: ru
 parts:
   holibot:
     enabled: true
     default_enabled_on_join: false
     scheduler:
-      post_time_utc: "04:00"
-      post_start_time_utc: "05:00"
-      post_end_time_utc: "08:00"
+      post_time_utc: "21:00"
+      post_start_time_utc: "22:00"
+      post_end_time_utc: "23:00"
     scraper:
       holiday_url: https://www.checkiday.com/
       holiday_limit: 0
@@ -45,9 +41,9 @@ parts:
       text_model: qwen-3-32b
       image_model: flux
       text_prompt:
-        "Generate a short, funny, and engaging caption for the holiday up to 700 symbols:
-        '{holiday_name}'. Return only the translated text, without any additional
-        comments or explanations."
+        "Generate a short, funny, and engaging caption for the holiday
+        up to 700 symbols: '{holiday_name}'. Return only the translated text, without
+        any additional comments or explanations."
       image_prompt: "A humorous, creative and crazy image for the holiday: '{holiday_name}'."
       image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
     telegram_settings:
@@ -68,15 +64,15 @@ parts:
     enabled: true
     default_enabled_on_join: true
     llm:
-      image_model: midjourney
+      image_model: flux
       image_prompt_template: "{prompt}"
       image_placeholder: https://m.media-amazon.com/images/I/61Tqhl9AgTL.jpg
   newsbot:
     enabled: true
     default_enabled_on_join: false
     scheduler:
-      post_start_time_utc: "06:00"
-      post_end_time_utc: "09:00"
+      post_start_time_utc: 06:00
+      post_end_time_utc: 09:00
       post_interval_minutes: 27
     scraper:
       sources:
