@@ -127,6 +127,7 @@ class JokeGeneratorModule(BotModule):
         prompt_template = llm_cfg.get(
             f"joke_prompt{joke_type}", "Tell me a short, funny joke about {topic}."
         )
+
         prompt = prompt_template.format(topic=topic)
 
         model = llm_cfg.get(f"text_model{joke_type}", self._base_text_model)

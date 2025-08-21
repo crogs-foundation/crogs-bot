@@ -18,13 +18,20 @@ async def _generate_text_inner(
         model=model, messages=[{"role": "user", "content": prompt}], **kwargs
     )
 
+    # print(f"INNER {response=}")
+
     content: str = response.choices[0].message.content
+
+    # print(f"{content=}")
 
     if remove_thinking:
         content = re.sub(
             r"<[Tt]hink>.*?</[Tt]hink>", "", content, flags=re.DOTALL
         ).strip()
         content = re.sub(r"<translate>(.*?)</translate>", r"\1", content, flags=re.DOTALL)
+        content = re.sub(
+            r"====START====(.*?)====END====", r"\1", content, flags=re.DOTALL
+        )
 
     if max_size:
         return content[:max_size]

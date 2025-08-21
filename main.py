@@ -24,11 +24,11 @@ from src.translators.google_translator import GoogleTranslator
 from src.translators.llm_translator import LLMTranslator
 
 # --- Prse arguments and setup Logger---
-load_dotenv()
 parser = argparse.ArgumentParser(description="Telegram Holiday Bot")
 parser.add_argument("--mode", type=str, choices=["dev", "prod"], default="prod")
 args = parser.parse_args()
 DEV_MODE = args.mode == "dev"
+load_dotenv(dotenv_path=".env" if not DEV_MODE else ".env.dev")
 logger = Logger("main", level="DEBUG" if DEV_MODE else "ERROR")
 logger.info(f"Application starting in '{args.mode}' mode.")
 
@@ -37,6 +37,9 @@ CONFIG_MANAGER = ConfigManager(logger, dev=DEV_MODE)
 bot = AsyncTeleBot(CONFIG_MANAGER.tg_token)
 client = AsyncClient()
 ACTIVE_BOT_MODULES: list[BotModule] = []
+
+scheduler_task: asyncio.Task | None = None
+shutdown_event: asyncio.Event | None = None
 
 
 def translator_factory(
@@ -132,7 +135,7 @@ async def handle_start(message: Message):
     help_text = "Hello! I am a modular bot. Here are the commands you can use:\n\n"
 
     # 1. Global Commands
-    help_text += "*Everyone*\n"
+    help_text += "<b>Everyone</b>\n"
     help_text += "/help - Shows this help message.\n"
     if message.chat.type != "private":
         help_text += "/language - Change the language for this chat.\n"
@@ -147,7 +150,7 @@ async def handle_start(message: Message):
 
     # 3. Admin-Only Commands
     if user_is_admin:
-        help_text += "\n*Admins Only*\n"
+        help_text += "\n<b>Admins Only</b>\n"
         help_text += "/settings - Open the settings panel.\n"
         # help_text += (
         #     "/postnow - Manually trigger all active modules to post in their channels.\n"
@@ -163,7 +166,7 @@ async def handle_start(message: Message):
                             f"/{cmd_info['command']} - {cmd_info['description']}\n"
                         )
 
-    await bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
+    await bot.send_message(message.chat.id, help_text, parse_mode="HTML")
 
 
 @bot.message_handler(commands=["postnow"])
@@ -318,18 +321,54 @@ async def polling_loop(shutdown_event: asyncio.Event):
     logger.info("Polling task has finished.")
 
 
-def reload_config_and_modules():
-    """Function to reload config from disk and re-instantiate modules."""
-    global TRANSLATOR
-    logger.info("Reloading config and modules...")
+async def reload_config_and_modules_async():
+    """
+    Asynchronously reloads config, modules, and restarts the background scheduler.
+    """
+    global TRANSLATOR, scheduler_task, shutdown_event
+    logger.info("--- Starting Asynchronous Reload Process ---")
+
+    # 1. Cancel the current running scheduler task
+    if scheduler_task and not scheduler_task.done():
+        logger.info("Scheduler: Cancelling the current scheduler task...")
+        scheduler_task.cancel()
+        try:
+            # Wait for the task to acknowledge the cancellation
+            await scheduler_task
+        except asyncio.CancelledError:
+            logger.info("Scheduler: Old scheduler task successfully cancelled.")
+
+    # 2. Reload config and re-instantiate modules (your original logic)
+    logger.info("Reloading configuration and re-instantiating modules...")
     CONFIG_MANAGER.reload()
     TRANSLATOR = translator_factory(logger, CONFIG_MANAGER.config, client)
-
+    await TRANSLATOR.check_api()
     instantiate_bot_modules()
-    logger.info("Config and modules reloaded.")
+
+    # 3. Start a new scheduler task
+    if shutdown_event:
+        logger.info("Scheduler: Restarting the background scheduler task...")
+        scheduler_task = asyncio.create_task(background_scheduler(shutdown_event))
+    else:
+        logger.error("Could not restart scheduler: shutdown_event not found.")
+
+    logger.info("--- Asynchronous Reload Process Complete ---")
+
+
+def reload_config_and_modules():
+    """
+    Synchronous wrapper to trigger the async reload process.
+    This is safe to pass as a callback to synchronous code.
+    """
+    logger.info("Scheduling a configuration and module reload...")
+    asyncio.create_task(reload_config_and_modules_async())
 
 
 async def main():
+    # --- Add 'global' statements here ---
+    global scheduler_task, shutdown_event
+    # ------------------------------------
+
     await TRANSLATOR.check_api()
     instantiate_bot_modules()
 
@@ -338,32 +377,36 @@ async def main():
         config_ref=CONFIG_MANAGER.config,
         logger=logger,
         save_callback=CONFIG_MANAGER.update_config,
-        reload_callback=reload_config_and_modules,
+        reload_callback=reload_config_and_modules,  # This now points to our sync wrapper
     )
     settings_manager.register_handlers()
     await set_bot_commands(bot)
 
+    # --- Initialize the global event ---
     shutdown_event = asyncio.Event()
+    # -----------------------------------
     loop = asyncio.get_running_loop()
 
-    # This handler will set the shutdown_event, telling our loops to stop
     def signal_handler():
         logger.warning("Shutdown signal received!")
-        shutdown_event.set()
+        if shutdown_event:
+            shutdown_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
-    # Create tasks for our main loops
+    # --- Use the global task variable ---
     scheduler_task = asyncio.create_task(background_scheduler(shutdown_event))
+    # ------------------------------------
     polling_task = asyncio.create_task(polling_loop(shutdown_event))
 
-    # Wait for the shutdown signal
     await shutdown_event.wait()
 
-    # Gracefully shut down tasks
     logger.info("Shutting down... cancelling running tasks.")
-    scheduler_task.cancel()
+    # --- Check if task exists before cancelling ---
+    if scheduler_task:
+        scheduler_task.cancel()
+    # -----------------------------------------
     polling_task.cancel()
 
     # Wait for tasks to finish their cancellation

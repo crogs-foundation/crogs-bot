@@ -23,12 +23,20 @@ class Translator(ABC):
 
     @abstractmethod
     async def translate(
-        self, text: str, target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        text: str,
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> str:
         """Translates a single string of text."""
 
     @abstractmethod
     async def translate_batch(
-        self, texts: list[str], target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        texts: list[str],
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> list[str]:
         """Translates a list of strings."""

@@ -28,7 +28,7 @@ class LLMTranslator(Translator):
             f"Checking LLM API connection for translation using model '{self.model}'..."
         )
         try:
-            await self.translate("hello", "es")
+            await self.translate("hello", "es", raise_exception=True)
             self.logger.info("LLM Translator seems to be working.")
             return True
         except Exception as e:
@@ -36,7 +36,11 @@ class LLMTranslator(Translator):
             return False
 
     async def translate(
-        self, text: str, target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        text: str,
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> str:
         if not text or not target_lang or target_lang.lower() in source_lang:
             return text
@@ -49,10 +53,16 @@ class LLMTranslator(Translator):
             return await generate_text(prompt, self.model, self.client)
         except Exception as e:
             self.logger.error(f"LLM translation failed for text to '{target_lang}': {e}")
+            if raise_exception:
+                raise e
             return text
 
     async def translate_batch(
-        self, texts: list[str], target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        texts: list[str],
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> list[str]:
         if not texts or not target_lang or target_lang.lower() in source_lang:
             return texts
@@ -60,7 +70,10 @@ class LLMTranslator(Translator):
         self.logger.debug(
             f"Batch translating {len(texts)} texts to '{target_lang}' using LLM."
         )
-        tasks = [self.translate(text, target_lang) for text in texts]
+        tasks = [
+            self.translate(text, target_lang, raise_exception=raise_exception)
+            for text in texts
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         final_texts = []

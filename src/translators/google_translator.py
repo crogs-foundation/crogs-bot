@@ -51,7 +51,11 @@ class GoogleTranslator(Translator):
             return False
 
     async def translate(
-        self, text: str, target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        text: str,
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> str:
         """
         Translates text by running the isolated translation task in a separate thread.
@@ -75,7 +79,11 @@ class GoogleTranslator(Translator):
             return text
 
     async def translate_batch(
-        self, texts: list[str], target_lang: str, source_lang: list[str] = ["en", "en-us"]
+        self,
+        texts: list[str],
+        target_lang: str,
+        source_lang: list[str] = ["en", "en-us"],
+        raise_exception: bool = False,
     ) -> list[str]:
         """
         Translates a batch of texts by running the isolated translation task in a separate thread.
