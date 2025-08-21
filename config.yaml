@@ -5,6 +5,9 @@ telegram:
   - '-1002851883232'
   - '-1002957589218'
   - '-1003097875673'
+  - '-4165184219'
+  - '-4680499889'
+  - '-1001547542669'
 translation:
   provider: llm
   strategy: prompt
@@ -42,6 +45,12 @@ chat_module_settings:
     imagebot: false
     newsbot: true
     language: zh-cn
+  '-4165184219':
+    language: ru
+  '-4680499889':
+    language: ru
+  '-1001547542669':
+    language: ru
 parts:
   holibot:
     enabled: true
